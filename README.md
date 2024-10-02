@@ -1,1 +1,1 @@
-# variational_pca
+# vpca
