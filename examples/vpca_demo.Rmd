@@ -1,0 +1,36 @@
+---
+title: "vpca_demo"
+output: pdf_document
+date: "2024-10-07"
+---
+
+## Create sample data as in Bishop 1999.
+
+```{r}
+
+t <- matrix(0, 10, 100)
+t[1,] <- rnorm(100, 0, sd = 5)
+t[2,] <- rnorm(100, 0, sd = 4)
+t[3,] <- rnorm(100, 0, sd = 3)
+t[4,] <- rnorm(100, 0, sd = 2)
+for (i in 5:10) {
+  t[i,] <- rnorm(100, 0, sd = 1)
+}
+```
+
+## Run vpca with default settings.
+
+```{r}
+library(vpca)
+res <- vpca(t)
+```
+
+## Visualize results.
+
+```{r}
+W <- res[[1]]
+heatmap(W, Rowv = NA, Colv = NA, scale = "column", col = heat.colors(256), margins = c(5, 5))
+
+elbo <- res[[2]]
+plot(elbo[2:length(elbo)], ylab = "ELBO", xlab = "iteration")
+```
