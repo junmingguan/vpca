@@ -5,6 +5,7 @@
 #' @param Sigma.W \eqn{\Sigma_\mathbf{W}}.
 #' @param m.mu \eqn{\mathbb{E}_Q[\mu]}.
 #' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
+#' @section TODO: can inversion be avoided?
 #'
 #' @return \eqn{\mathbb{E}[\mathbf{x}_n]} and \eqn{\Sigma_\mathbf{x}}.
 get.x <- function(t, m.W, Sigma.W, m.mu, m.tau) {
@@ -43,6 +44,7 @@ get.mu <- function(t, m.W, m.x, m.tau, beta) {
 #' @param m.mu \eqn{\mathbb{E}[\mu]}.
 #' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
 #' @param m.alpha \eqn{\mathbb{E}[\mathbf{\alpha}]}.
+#' @section TODO: can inversion be avoided?
 #'
 #' @return \eqn{\mathbb{E}[\mathbf{W}]} and \eqn{\Sigma_{\mathbf{W}}}.
 get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
