@@ -12,13 +12,16 @@ get.x <- function(t, m.W, Sigma.W, m.mu, m.tau) {
   # t: d by n
   # x: q by n
   # m.W: d by q
-  M <- matrix(0, nrow = ncol(m.W), ncol = ncol(t))
+  d <- nrow(t)
+  q <- ncol(m.W)
+  # M <- matrix(0, nrow = ncol(m.W), ncol = ncol(t))
   m.WtW <- nrow(t) * Sigma.W + t(m.W) %*% m.W
-  Sigma.inv <- m.tau * m.WtW + diag(nrow(m.WtW))
-  for (i in 1:ncol(t)) {
-    M[, i] <- m.tau * solve(Sigma.inv, t(m.W) %*% (t[, i] - m.mu))
-  }
-  return(list(M, solve(Sigma.inv)))
+  Sigma <- solve(m.tau * m.WtW + diag(q))
+  # for (i in 1:ncol(t)) {
+  #   M[, i] <- m.tau * Sigma %*% t(m.W) %*% (t[, i] - m.mu)
+  # }
+  M <- m.tau * Sigma %*% t(m.W) %*% (t - m.mu)
+  return(list(M, Sigma))
 }
 
 #' Title Update \eqn{Q(\mathbf{\mu})}.
@@ -51,14 +54,14 @@ get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
   # M: d by q
   M <- matrix(0, nrow = nrow(t), ncol = nrow(m.x))
   m.xxt <- ncol(t) * Sigma.x + m.x %*% t(m.x)
-  Sigma.inv <- diag(m.alpha) + m.tau * m.xxt
+  Sigma <- solve(diag(m.alpha) + m.tau * m.xxt)
   for (k in 1:nrow(t)) {
     for (n in 1:ncol(t)) {
       M[k, ] <- M[k, ] + (t[k, n] - m.mu[k]) * m.x[, n]
     }
-    M[k, ] <- m.tau * solve(Sigma.inv, M[k, ])
+    M[k, ] <- m.tau * Sigma %*% M[k, ]
   }
-  return(list(M, solve(Sigma.inv)))
+  return(list(M, Sigma))
 }
 
 #' Title Update \eqn{Q(\mathbf{\alpha})}.
@@ -70,13 +73,10 @@ get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
 #'
 #' @return \eqn{\tilde{a}_\alpha} and \eqn{\tilde{b}_\alpha}.
 get.alpha <- function(m.W, Sigma.W, a.alpha, b.alpha) {
+   d <- nrow(m.W)
    a <- a.alpha + nrow(m.W) / 2
-   tr.Sigma.W <- sum(diag(Sigma.W))
-   b <- rep(0, ncol(m.W))
-   for (i in 1:ncol(m.W)) {
-     b[i] <- b.alpha + (nrow(m.W) * Sigma.W[i, i] + sum(m.W[, i]^2)) / 2
-   }
-   # b <- b.alpha + (colSums(m.W^2) + tr.Sigma.W) / 2
+   m.WtW <- d * Sigma.W + t(m.W) %*% m.W
+   b <- b.alpha + diag(m.WtW) / 2
    return(list(a, b))
 }
 
@@ -95,11 +95,14 @@ get.alpha <- function(m.W, Sigma.W, a.alpha, b.alpha) {
 #' @return \eqn{\tilde{a}_\tau} and \eqn{\tilde{b}_\tau}.
 get.tau <- function(t, m.x, Sigma.x, m.W,
                     Sigma.W, m.mu, Sigma.mu, a.tau, b.tau) {
-  a <- a.tau + nrow(t) * ncol(t) / 2
+  d <- nrow(t)
+  q <- nrow(m.x)
+  n <- ncol(t)
+  a <- a.tau + n * d / 2
   mu.norm2 <- sum(diag(Sigma.mu)) + sum(m.mu^2)
-  m.WtW <- nrow(t) * Sigma.W + t(m.W) %*% m.W
-  m.xxt <- ncol(t) * Sigma.x + m.x %*% t(m.x)
-  b <- b.tau + (sum(t^2) + ncol(t) * mu.norm2 + sum(diag(m.WtW %*% m.xxt)) +
+  m.WtW <- d * Sigma.W + t(m.W) %*% m.W
+  m.xxt <- n * Sigma.x + m.x %*% t(m.x)
+  b <- b.tau + (sum(t^2) + n * mu.norm2 + sum(diag(m.WtW %*% m.xxt)) +
                   2 * t(m.mu) %*% m.W %*% rowSums(m.x) -
                   2 * sum(diag(t(t) %*% m.W %*% m.x)) -
                   2 * t(m.mu) %*% rowSums(t)
@@ -123,18 +126,28 @@ get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
   E.log.alpha <- digamma(a.tilde.alpha) - log(b.tilde.alpha)
   E.log.tau <- digamma(a.tilde.tau) - log(b.tilde.tau)
 
+  mu.norm2 <- sum(diag(Sigma.mu)) + sum(m.mu^2)
+  m.WtW <- d * Sigma.W + t(m.W) %*% m.W
+  m.xxt <- n * Sigma.x + m.x %*% t(m.x)
   complete.lik <- d * n / 2 * (E.log.tau - log(2*pi)) +
-    m.tau * (sum(diag(t(t) %*% m.W %*% m.x)) + t(m.mu) %*% rowSums(t) -
-               0.5 * sum(t^2) - 0.5 * n * (sum(diag(Sigma.mu)) + sum(m.mu^2)))
+    -(sum(t^2) + n * mu.norm2 + sum(diag(m.WtW %*% m.xxt)) +
+        2 * t(m.mu) %*% m.W %*% rowSums(m.x) -
+        2 * sum(diag(t(t) %*% m.W %*% m.x)) -
+        2 * t(m.mu) %*% rowSums(t))
+    # m.tau * (sum(diag(t(t) %*% m.W %*% m.x)) + t(m.mu) %*% rowSums(t) -
+    #            0.5 * sum(t^2) - 0.5 * n * (sum(diag(Sigma.mu)) + sum(m.mu^2)))
 
   entropy <- n * q / 2 * log(2*pi*exp(1)) + n / 2 * log(det(Sigma.x)) + # H(X)
     d / 2 * log(2*pi*exp(1)) + 0.5 * log(det(Sigma.mu)) + # H(mu)
-    d * q / 2 * log(2*pi*exp(1)) + q / 2 * log(det(Sigma.W)) + # H(W)
+    d * q / 2 * log(2*pi*exp(1)) + d / 2 * log(det(Sigma.W)) + # H(W)
     q * (a.tilde.alpha + log(gamma(a.tilde.alpha)) + (1 - a.tilde.alpha) * digamma(a.tilde.alpha)) - sum(log(b.tilde.alpha)) + # H(alpha)
     a.tilde.tau - log(b.tilde.tau) + log(gamma(a.tilde.tau)) + (1 - a.tilde.tau) * digamma(a.tilde.tau) # H(tau)
 
-  prior.W.alpha <- sum(E.log.alpha) + d / 2 * sum(E.log.alpha) - d*q/2 * log(2*pi) -
-    0.5 * sum(diag(Sigma.W)) * sum(m.alpha) - 0.5 * sum(m.alpha * colSums(m.W^2))
+  # print(0.5 * sum(diag(Sigma.W)) * sum(m.alpha) - 0.5 * sum(m.alpha * colSums(m.W^2)) - 0.5 * sum(diag(m.WtW) * m.alpha))
+  prior.W.alpha <- d / 2 * sum(E.log.alpha) - d*q/2 * log(2*pi) -
+    # 0.5 * sum(diag(Sigma.W)) * sum(m.alpha) - 0.5 * sum(m.alpha * colSums(m.W^2)) + # W
+    0.5 * sum(diag(m.WtW) * m.alpha) # W
+    q * a.alpha * log(b.alpha) + (a.alpha - 1) * sum(E.log.alpha) - b.alpha * sum(m.alpha) - q * log(gamma(a.alpha)) # alpha
   prior.x <- -n*q/2 * log(2*pi) - 0.5 * n * sum(diag(Sigma.x)) - 0.5 * sum(m.x^2)
   prior.mu <- -d/2 * log(2*pi) + d/2 * log(beta) - beta/2 * (sum(diag(Sigma.mu)) + sum(m.mu^2))
   prior.tau <- a.tilde.tau * log(b.tilde.tau) - log(gamma(a.tilde.tau)) +
@@ -142,7 +155,7 @@ get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
 
   prior <- prior.W.alpha + prior.x + prior.mu + prior.tau
 
-  return(complete.lik + prior - entropy)
+  return(complete.lik + prior + entropy)
 }
 
 
@@ -167,12 +180,14 @@ vpca <- function(t, a.alpha = 0.001, b.alpha = 0.001,
   q <- d - 1
 
   # initialization
-  m.x <- matrix(rnorm(q * n), nrow = q, ncol = n)
+  m.x <- matrix(rnorm(q*n), nrow = q, ncol = n)
   Sigma.x <- diag(q)
-  m.mu <- rnorm(d)
+  m.mu <- rowSums(t) / n
   Sigma.mu <- diag(d)
-  m.W <-matrix(rnorm(d * q), nrow = d, ncol = q)
+  m.W <-  matrix(rnorm(d * q), nrow = d, ncol = q)
   Sigma.W <- diag(q)
+  # svd.t <- svd((t - m.mu) %*% t(t - m.mu))
+  # m.W <- svd.t$u[,1:q] %*% diag(sqrt(svd.t$d[1:q]))
   a.tilde.alpha <- a.alpha
   b.tilde.alpha <- rep(b.alpha, q)
   m.alpha <- a.tilde.alpha / b.tilde.alpha
@@ -218,12 +233,9 @@ vpca <- function(t, a.alpha = 0.001, b.alpha = 0.001,
     diff <- abs(elbo.new - elbo.old)
     elbo.old <- elbo.new
     elbo <- c(elbo, elbo.new)
-    if (diff < epsilon || count == max.iter) {
-      if (count == max.iter) {
-        warning("Maximum number of iteration reached.")
-      }
+    if (count == max.iter) {
       break
     }
   }
-  return(list(m.W, elbo))
+  return(list(m.W, Sigma.W, m.tau, m.mu, elbo))
 }
