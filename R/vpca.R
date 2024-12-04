@@ -1,4 +1,4 @@
-#' Title Update \eqn{Q(X)}.
+#' Update \eqn{Q(X)}.
 #'
 #' @param t d-by-n data matrix.
 #' @param m.W \eqn{\mathbb{E}_Q[\mathbf{W}]}.
@@ -22,12 +22,11 @@ get.x <- function(t, m.W, Sigma.W, m.mu, m.tau, m.alpha) {
   else {
     Sigma <- solve(m.tau * m.WtW + diag(m.alpha))
   }
-  Sigma <- solve(m.tau * m.WtW + diag(q))
   M <- m.tau * Sigma %*% t(m.W) %*% (t - outer(m.mu, rep(1, n))) #(t - m.mu)
   return(list(M, Sigma))
 }
 
-#' Title Update \eqn{Q(\mathbf{\mu})}.
+#' Update \eqn{Q(\mathbf{\mu})}.
 #'
 #' @param t d-by-n data matrix.
 #' @param m.W \eqn{\mathbb{E}_Q[\mathbf{W}]}.
@@ -44,7 +43,7 @@ get.mu <- function(t, m.W, m.x, m.tau, beta) {
   return(list(m, Sigma))
 }
 
-#' Title Update \eqn{\mathbf{W}}.
+#' Update \eqn{\mathbf{W}}.
 #'
 #' @param t d-by-n data matrix.
 #' @param m.x \eqn{\mathbb{E}[\mathbf{x}_n]}.
@@ -70,7 +69,7 @@ get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
   return(list(M, Sigma))
 }
 
-#' Title Update \eqn{Q(\mathbf{\alpha})}.
+#' Update \eqn{Q(\mathbf{\alpha})}.
 #'
 #' @param m.W \eqn{\mathbb{E}[\mathbf{W}]}.
 #' @param Sigma.W \eqn{\Sigma_{\mathbf{W}}}.
@@ -99,7 +98,7 @@ get.alpha.mle <- function(m.W, Sigma.W) {
   return(d / diag(m.WtW))
 }
 
-#' Title Update \eqn{Q(\tau)}.
+#' Update \eqn{Q(\tau)}.
 #'
 #' @param t d-by-n data matrix.
 #' @param m.x \eqn{\mathbb{E}[\mathbf{x}_n]}.
@@ -130,7 +129,7 @@ get.tau <- function(t, m.x, Sigma.x, m.W,
 }
 
 
-#' Title Compute ELBO with given moments,
+#' Compute ELBO with given moments,
 #'
 #' @return ELBO \eqn{\mathcal{L}(\theta)}.
 get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
@@ -208,7 +207,7 @@ get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
 }
 
 
-#' Title Variational PCA algorithm runner.
+#' Variational PCA algorithm runner.
 #'
 #' @param t d-by-n data matrix.
 #' @param fit.alpha.mle Whether to fit \eqn{\alpha} via MLE.
