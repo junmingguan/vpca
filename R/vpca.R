@@ -17,10 +17,10 @@ get.x <- function(t, m.W, Sigma.W, m.mu, m.tau, m.alpha) {
   q <- ncol(m.W)
   m.WtW <- nrow(t) * Sigma.W + t(m.W) %*% m.W
   if (missing(m.alpha)) {
-    Sigma <- solve(m.tau * m.WtW + diag(q))
+    Sigma <- chol2inv(chol(m.tau * m.WtW + diag(q)))
   }
   else {
-    Sigma <- solve(m.tau * m.WtW + diag(m.alpha))
+    Sigma <- chol2inv(chol(m.tau * m.WtW + diag(m.alpha)))
   }
   M <- m.tau * Sigma %*% t(m.W) %*% (t - outer(m.mu, rep(1, n))) #(t - m.mu)
   return(list(M, Sigma))
@@ -60,9 +60,9 @@ get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
   q <- nrow(m.x)
   m.xxt <- n * Sigma.x + m.x %*% t(m.x)
   if (missing(m.alpha)) {
-    Sigma <- solve(diag(q) + m.tau * m.xxt)
+    Sigma <- chol2inv(chol(diag(q) + m.tau * m.xxt))
   } else {
-    Sigma <- solve(diag(m.alpha) + m.tau * m.xxt)
+    Sigma <- chol2inv(chol(diag(m.alpha) + m.tau * m.xxt))
   }
   M <- m.tau * Sigma %*% m.x %*% (t(t) - outer(rep(1, n), m.mu))
   M <- t(M)
