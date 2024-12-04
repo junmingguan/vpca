@@ -227,7 +227,7 @@ get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
 #' @export
 vpca <- function(t, fit.alpha.mle = F, W.alpha = T, x.alpha = F, a.alpha = 0.001, b.alpha = 0.001,
                  a.tau = 0.001, b.tau = 0.001, beta = 0.001,
-                 min.iter = 200, max.iter = 3000, epsilon = 0.0001) {
+                 min.iter = 1000, max.iter = 3000, epsilon = 0.0001) {
   if (!W.alpha & !x.alpha) {
     stop("Must fit alpha for at least one of W and alpha.")
   }
