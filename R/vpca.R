@@ -1,364 +1,293 @@
-#' Update \eqn{Q(X)}.
-#'
-#' @param t d-by-n data matrix.
-#' @param m.W \eqn{\mathbb{E}_Q[\mathbf{W}]}.
-#' @param Sigma.W \eqn{\Sigma_\mathbf{W}}.
-#' @param m.mu \eqn{\mathbb{E}_Q[\mu]}.
-#' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
-#' @section TODO: can matrix inversion be avoided?
-#'
-#' @return \eqn{\mathbb{E}[\mathbf{x}_n]} and \eqn{\Sigma_\mathbf{x}}.
-get.x <- function(t, m.W, Sigma.W, m.mu, m.tau, m.alpha) {
-  # t: d by n
-  # x: q by n
-  # m.W: d by q
-  d <- nrow(t)
-  n <- ncol(t)
-  q <- ncol(m.W)
-  m.WtW <- nrow(t) * Sigma.W + t(m.W) %*% m.W
-  if (missing(m.alpha)) {
-    Sigma <- chol2inv(chol(m.tau * m.WtW + diag(q)))
-  }
-  else {
-    Sigma <- chol2inv(chol(m.tau * m.WtW + diag(m.alpha)))
-  }
-  M <- m.tau * Sigma %*% t(m.W) %*% (t - outer(m.mu, rep(1, n))) #(t - m.mu)
-  return(list(M, Sigma))
-}
+# library(microbenchmark)
 
-#' Update \eqn{Q(\mathbf{\mu})}.
+
+#' Update either \eqn{Q(\mathbf{X})}.
 #'
-#' @param t d-by-n data matrix.
-#' @param m.W \eqn{\mathbb{E}_Q[\mathbf{W}]}.
-#' @param m.x \eqn{\mathbb{E}[\mathbf{x}_n]}.
-#' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
-#' @param beta \eqn{\beta}.
+#' @param obj vpca.data object.
 #'
-#' @return \eqn{\mathbb{E}[\mu]} and \eqn{\Sigma_\mu}.
-get.mu <- function(t, m.W, m.x, m.tau, beta) {
-  d <- nrow(t)
-  n <- ncol(t)
-  m <- m.tau * rowSums(t - m.W %*% m.x) / (beta + n * m.tau)
-  Sigma <- diag(d) / (beta + n * m.tau)
-  return(list(m, Sigma))
+#' @return vpca.data object.
+#' @import Matrix
+update_X <- function(obj) {
+  return(
+    within(
+      obj,
+      {
+        # if (missing(Ealpha)) {
+        #   Sigma <- chol2inv(chol(E_tau * E_WtW + diag(q)))
+        # }
+        # else {
+        #   Sigma <- chol2inv(chol(E_tau * E_WtW + diag(E_alpha)))
+        # }
+        if (alpha_for_X) {
+          Sigma <- chol2inv(chol(diag(E_alpha_X) + E_tau * E_WtW))
+        } else {
+          Sigma <- chol2inv(chol(E_tau * E_WtW + diag(q)))
+        }
+        # print( 
+        #   microbenchmark( E_tau * Sigma %*% t(E_W) %*% (Y - outer(E_mu, rep(1, n))) , E_tau * Sigma %*% ( t(E_W) %*% Y - drop( t(E_W) %*% E_mu ) ) , times=100 ) 
+        # ) 
+        # E_X <- E_tau * Sigma %*% t(E_W) %*% (Y - outer(E_mu, rep(1, n)))
+        if (include_mu) {
+          E_X <- E_tau * Sigma %*% ( t(E_W) %*% Y - drop( t(E_W) %*% E_mu ) )
+        } else {
+          E_X <- E_tau * Sigma %*% ( t(E_W) %*% Y )
+        }
+        E_XXt <- n * Sigma + E_X %*% t(E_X)
+        H_X <- n * q / 2 * log(2 * pi * exp(1)) + n / 2 * determinant(Sigma, logarithm = TRUE)$modulus[1]
+        if (alpha_for_X) {
+          P_X <- n / 2 * sum(E_log_alpha_X) - n * d / 2 * log(2 * pi) - 0.5 * sum(diag(E_XXt) * E_alpha_X)
+        }
+        Sigma_X <- Sigma
+        rm(Sigma)
+      }
+    )
+  )
 }
 
 #' Update \eqn{\mathbf{W}}.
 #'
-#' @param t d-by-n data matrix.
-#' @param m.x \eqn{\mathbb{E}[\mathbf{x}_n]}.
-#' @param Sigma.x \eqn{\Sigma_\mathbf{x}}.
-#' @param m.mu \eqn{\mathbb{E}[\mu]}.
-#' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
-#' @param m.alpha \eqn{\mathbb{E}[\mathbf{\alpha}]}.
-#' @section TODO: can inversion be avoided?
+#' @param obj vpca.data object.
 #'
-#' @return \eqn{\mathbb{E}[\mathbf{W}]} and \eqn{\Sigma_{\mathbf{W}}}.
-get.W <- function(t, m.x, Sigma.x, m.mu, m.tau, m.alpha) {
-  d <- nrow(t)
-  n <- ncol(t)
-  q <- nrow(m.x)
-  m.xxt <- n * Sigma.x + m.x %*% t(m.x)
-  if (missing(m.alpha)) {
-    Sigma <- chol2inv(chol(diag(q) + m.tau * m.xxt))
-  } else {
-    Sigma <- chol2inv(chol(diag(m.alpha) + m.tau * m.xxt))
-  }
-  M <- m.tau * Sigma %*% m.x %*% (t(t) - outer(rep(1, n), m.mu))
-  M <- t(M)
-  return(list(M, Sigma))
+#' @return vpca.data object.
+#' @import Matrix
+update_W <- function(obj) {
+  return(
+    within(
+      obj,
+      {
+        # if (missing(E_alpha)) {
+        #   Sigma <- chol2inv(chol(diag(q) + E_tau * E_XXt))
+        # }
+        # else {
+        #   Sigma <- chol2inv(chol(diag(E_alpha) + E_tau * E_XXt))
+        # }
+        Sigma <- chol2inv(chol(diag(E_alpha) + E_tau * E_XXt))
+
+        # print( 
+        #   microbenchmark( E_tau * Sigma %*% E_X %*% (t(Y) - outer(rep(1, n), E_mu)) , 
+        #    E_tau * ( Y %*% t(E_X) %*% Sigma - outer(E_mu, rep(1, n)) %*% t(E_X) %*% Sigma ), 
+        #    E_tau * ( Y %*% t(E_X) %*% Sigma - outer(E_mu, drop( Sigma %*% rowSums(E_X) ) ) ),
+        #    E_tau * ( Y %*% t(E_X) %*% Sigma ),
+        #    times=100 ) 
+        # )
+
+        # E_W <- E_tau * Sigma %*% E_X %*% (t(Y) - outer(rep(1, n), E_mu))
+        # E_W <- t(E_W)
+        if (include_mu) {
+          # print(sapply(E_mu, function(x) x * Sigma %*% rowSums(E_X)))
+          # E_W <- E_tau * ( Y %*% t(E_X) %*% Sigma - outer(E_mu, rep(1, n)) %*% t(E_X) %*% Sigma )
+          E_W <- E_tau * ( Y %*% t(E_X) %*% Sigma - outer(E_mu, drop( Sigma %*% rowSums(E_X) ) ) )
+        } else {
+          E_W <- E_tau * ( Y %*% t(E_X) %*% Sigma )
+        }
+        E_WtW <- d * Sigma + t(E_W) %*% E_W
+        H_W <- d * q / 2 * log(2 * pi * exp(1)) + d / 2 * determinant(Sigma, logarithm = TRUE)$modulus[1]
+        P_W <- d / 2 * sum(E_log_alpha) - d * q / 2 * log(2 * pi) - 0.5 * sum(diag(E_WtW) * E_alpha)
+        Sigma_W <- Sigma
+        rm(Sigma)
+      }
+    )
+  )
 }
 
-#' Update \eqn{Q(\mathbf{\alpha})}.
+#' Update \eqn{Q(\mathbf{\mu})}.
 #'
-#' @param m.W \eqn{\mathbb{E}[\mathbf{W}]}.
-#' @param Sigma.W \eqn{\Sigma_{\mathbf{W}}}.
-#' @param a.alpha \eqn{a_\alpha}.
-#' @param b.alpha \eqn{b_\alpha}.
+#' @param obj vpca.data object.
 #'
-#' @return \eqn{\tilde{a}_\alpha} and \eqn{\tilde{b}_\alpha}.
-get.alpha <- function(m.W, Sigma.W, a.alpha, b.alpha) {
-   d <- nrow(m.W)
-   m.WtW <- d * Sigma.W + t(m.W) %*% m.W
-   a <- a.alpha + d / 2
-   b <- b.alpha + diag(m.WtW) / 2
-   return(list(a, b))
+#' @return vpca.data object.
+#' @import Matrix
+update_mu <- function(obj) {
+  return(
+    within(
+      obj,
+      {
+        E_mu <- ( rowSums(Y) - E_W %*% rowSums(E_X) ) * ( E_tau / (beta + n * E_tau) )
+        E_mu_Sum_Sq <- d / (beta + n * E_tau) + sum(E_mu^2)
+        logdet_Sigma <- sum(log(d / (beta + n * E_tau)))
+        H_mu <- d / 2 * log(2 * pi * exp(1)) + 0.5 * logdet_Sigma
+        P_mu <- -d / 2 * log(2 * pi) + d / 2 * log(beta) - beta / 2 * (logdet_Sigma + sum(E_mu^2))
+        rm(logdet_Sigma)
+      }
+    )
+  )
 }
 
-#' Get MLE estimate of alpha
+#' Update \eqn{Q(\mathbf{\alpha_\mathbf{X}})}.
 #'
-#' @param m.W \eqn{\mathbb{E}[\mathbf{W}]}.
-#' @param Sigma.W \eqn{\Sigma_{\mathbf{W}}}.
+#' @param obj vpca.data object.
 #'
-#' @return \eqn{\hat{\alpha}_{\text{MLE}}} of \eqn{P(W \mid \alpha)}
-#' @export
-get.alpha.mle <- function(m.W, Sigma.W) {
-  d <- nrow(m.W)
-  m.WtW <- d * Sigma.W + t(m.W) %*% m.W
-  return(d / diag(m.WtW))
+#' @return vpca.data object.
+#' @import Matrix
+update_alpha <- function(obj) {
+  return(
+    within(
+      obj,
+      {
+        if (alpha_MLE) {
+          E_alpha <- d / diag(E_WtW)
+          E_log_alpha <- log(E_alpha)
+        } else {
+          a <- a_alpha + d / 2
+          b <- b_alpha + diag(E_WtW) / 2
+          E_alpha <- a / b
+          E_log_alpha <- digamma(a) - log(b)
+          H_alpha <- q * (a + lgamma(a) + (1 - a) * digamma(a)) - sum(log(b))
+          P_alpha <- q * a_alpha * log(b_alpha) + (a_alpha - 1) * sum(E_log_alpha) - b_alpha * sum(E_alpha) - q * lgamma(a_alpha)
+          rm(a)
+          rm(b)
+        }
+
+        if (alpha_for_X) {
+          if (alpha_MLE) {
+            E_alpha_X <- n / diag(E_XXt)
+            E_log_alpha_X <- log(E_alpha_X)
+          } else {
+            a <- a_alpha + n / 2
+            b <- b_alpha + diag(E_XXt) / 2
+            E_alpha_X <- a / b
+            E_log_alpha_X <- digamma(a) - log(b)
+            H_alpha_X <- q * (a + lgamma(a) + (1 - a) * digamma(a)) - sum(log(b))
+            P_alpha_X <- q * a_alpha * log(b_alpha) + (a_alpha - 1) * sum(E_log_alpha_X) - b_alpha * sum(E_alpha_X) - q * lgamma(a_alpha)
+            rm(a)
+            rm(b)
+          }
+        }
+      }
+    )
+  )
 }
 
 #' Update \eqn{Q(\tau)}.
 #'
-#' @param t d-by-n data matrix.
-#' @param m.x \eqn{\mathbb{E}[\mathbf{x}_n]}.
-#' @param Sigma.x \eqn{\Sigma_\mathbf{x}}.
-#' @param m.W \eqn{\mathbb{E}[\mathbf{W}]}.
-#' @param Sigma.W \eqn{\Sigma_{\mathbf{W}}}.
-#' @param m.mu \eqn{\mathbb{E}_Q[\mu]}.
-#' @param Sigma.mu \eqn{\Sigma_{\mathbf{\mu}}}.
-#' @param a.tau \eqn{a_\tau}.
-#' @param b.tau \eqn{b_\tau}.
+#' @param obj vpca.data object.
 #'
-#' @return \eqn{\tilde{a}_\tau} and \eqn{\tilde{b}_\tau}.
-get.tau <- function(t, m.x, Sigma.x, m.W,
-                    Sigma.W, m.mu, Sigma.mu, a.tau, b.tau) {
-  d <- nrow(t)
-  q <- nrow(m.x)
-  n <- ncol(t)
-  a <- a.tau + n * d / 2
-  mu.norm2 <- sum(diag(Sigma.mu)) + sum(m.mu^2)
-  m.WtW <- d * Sigma.W + t(m.W) %*% m.W
-  m.xxt <- n * Sigma.x + m.x %*% t(m.x)
-  b <- b.tau + (sum(t^2) + n * mu.norm2 + sum(diag(m.WtW %*% m.xxt)) +
-                  2 * t(m.mu) %*% m.W %*% rowSums(m.x) -
-                  2 * sum(diag(t(t) %*% m.W %*% m.x)) -
-                  2 * t(m.mu) %*% rowSums(t)
-                ) / 2
-  return(list(a, b[1]))
+#' @return vpca.data object.
+#' @import Matrix
+update_tau <- function(obj) {
+  return(
+    within(
+      obj,
+      {
+        # print(
+        #   microbenchmark( # drop( Reduce(`+`, lapply(1:n, function(j) t(Y[, j]) %*% E_W %*% E_X[, j]))),
+        #   sum(t(Y) %*% E_W * t(E_X)),
+        #   sum(diag(t(Y) %*% E_W %*% E_X)),
+        #    times=100 )
+        # )
+        # print(sum(t(Y) %*% E_W * t(E_X))-sum(diag(t(Y) %*% E_W %*% E_X)))
+
+
+        a <- a_tau + n * d / 2
+        if (include_mu) {
+          E_resid_Sq <- Y_Frob_Sq + n * E_mu_Sum_Sq + sum(diag(E_WtW %*% E_XXt)) +
+            2 * t(E_mu) %*% E_W %*% rowSums(E_X) -
+            2 * sum(t(Y) %*% E_W * t(E_X)) -
+            2 * t(E_mu) %*% rowSums(Y)
+        } else {
+          E_resid_Sq <- Y_Frob_Sq + sum(diag(E_WtW %*% E_XXt)) -
+            2 * sum(t(Y) %*% E_W * t(E_X))
+        }
+        b <- b_tau + E_resid_Sq / 2
+        E_tau <- a / b[1]
+        E_log_tau <- digamma(a) - log(b)
+        H_tau <- a - log(b) + lgamma(a) + (1 - a) * digamma(a)
+        P_tau <- a * log(b) - lgamma(a) + (a - 1) * E_log_tau - b_tau * E_tau
+        rm(a)
+        rm(b)
+      }
+    )
+  )
 }
 
 
-#' Compute ELBO with given moments,
+#' Compute ELBO.
 #'
-#' @return ELBO \eqn{\mathcal{L}(\theta)}.
-get.elbo <- function(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
-                 alpha.param, a.tilde.tau, b.tilde.tau,
-                 a.tau, b.tau, beta) {
+#' @param obj vpca.data object.
+#'
+#' @return vpca.data object.
+#' @import Matrix
+update_elbo <- function(obj) {
   # complete likelihood
-  n <- ncol(t)
-  d <- nrow(t)
-  q <- ncol(m.W)
-  m.tau <- a.tilde.tau / b.tilde.tau
-  E.log.tau <- digamma(a.tilde.tau) - log(b.tilde.tau)
+  return(
+    within(
+      obj,
+      {
+        complete_loglik <- d * n / 2 * (E_log_tau - log(2*pi)) +
+          - E_resid_Sq * E_tau / 2
 
-  mu.norm2 <- sum(diag(Sigma.mu)) + sum(m.mu^2)
-  m.WtW <- d * Sigma.W + t(m.W) %*% m.W
-  m.xxt <- n * Sigma.x + m.x %*% t(m.x)
-  complete.lik <- d * n / 2 * (E.log.tau - log(2*pi)) +
-    -(sum(t^2) + n * mu.norm2 + sum(diag(m.WtW %*% m.xxt)) +
-        2 * t(m.mu) %*% m.W %*% rowSums(m.x) -
-        2 * sum(diag(t(t) %*% m.W %*% m.x)) -
-        2 * t(m.mu) %*% rowSums(t)) * m.tau / 2 # related to tau update
+        entropy <- H_X + H_W + H_tau
 
-  entropy <- n * q / 2 * log(2*pi*exp(1)) + n / 2 * log(det(Sigma.x)) + # H(X)
-    d / 2 * log(2*pi*exp(1)) + 0.5 * log(det(Sigma.mu)) + # H(mu)
-    d * q / 2 * log(2*pi*exp(1)) + d / 2 * log(det(Sigma.W)) + # H(W)
-    a.tilde.tau - log(b.tilde.tau) + lgamma(a.tilde.tau) + (1 - a.tilde.tau) * digamma(a.tilde.tau)# H(tau)
+        if (include_mu) {
+          entropy <- entropy + H_mu
+        }
 
-  prior.mu <- -d/2 * log(2*pi) + d/2 * log(beta) - beta/2 * (sum(diag(Sigma.mu)) + sum(m.mu^2))
-  prior.tau <- a.tilde.tau * log(b.tilde.tau) - lgamma(a.tilde.tau) +
-    (a.tilde.tau - 1) * E.log.tau - b.tau * m.tau
-  prior <- prior.mu + prior.tau
+        prior <- P_tau + P_W
+        if (include_mu) {
+          prior <- prior + P_mu
+        }
+        if (!alpha_MLE) {
+          prior <- prior + P_W + P_alpha
+          entropy <- entropy + H_alpha
+          if (alpha_for_X) {
+            prior <- prior + P_X + P_alpha_X
+            entropy <- entropy + H_alpha_X
+          }
+        }
 
-  # m.alpha <- alpha.param$W$m
-  if (!alpha.param$mle) {
-    if ("W" %in% names(alpha.param)) {
-      m.alpha <- alpha.param$W$m
-      a.tilde.alpha <- alpha.param$W$a.tilde
-      b.tilde.alpha <- alpha.param$W$b.tilde
-      a.alpha <- alpha.param$W$a
-      b.alpha <- alpha.param$W$b
-      E.log.alpha <- digamma(a.tilde.alpha) - log(b.tilde.alpha)
-      prior.W <- d / 2 * sum(E.log.alpha) - d*q/2 * log(2*pi) - 0.5 * sum(diag(m.WtW) * m.alpha)
-      prior.alpha <- q * a.alpha * log(b.alpha) + (a.alpha - 1) * sum(E.log.alpha) - b.alpha * sum(m.alpha) - q * lgamma(a.alpha)
-      prior <- prior + prior.W + prior.alpha
-
-      H.alpha <- q * (a.tilde.alpha + lgamma(a.tilde.alpha) + (1 - a.tilde.alpha) * digamma(a.tilde.alpha)) - sum(log(b.tilde.alpha)) # H(alpha)
-      entropy <- entropy + H.alpha
-    }
-    if ("x" %in% names(alpha.param)) {
-      m.alpha <- alpha.param$x$m
-      a.tilde.alpha <- alpha.param$x$a.tilde
-      b.tilde.alpha <- alpha.param$x$b.tilde
-      a.alpha <- alpha.param$x$a
-      b.alpha <- alpha.param$x$b
-      E.log.alpha <- digamma(a.tilde.alpha) - log(b.tilde.alpha)
-      prior.x <- n / 2 * sum(E.log.alpha) - n*d/2 * log(2*pi) - 0.5 * sum(diag(m.xxt) * m.alpha)
-      prior.alpha <- d * a.alpha * log(b.alpha) + (a.alpha - 1) * sum(E.log.alpha) - b.alpha * sum(m.alpha) - d * lgamma(a.alpha)
-      prior <- prior + prior.x + prior.alpha
-      H.alpha <- d * (a.tilde.alpha + lgamma(a.tilde.alpha) + (1 - a.tilde.alpha) * digamma(a.tilde.alpha)) - sum(log(b.tilde.alpha)) # H(alpha)
-      entropy <- entropy + H.alpha
-    }
-  } else {
-    if ("W" %in% names(alpha.param)) {
-      m.alpha <- alpha.param$W$m
-      prior.W <- d / 2 * sum(log(m.alpha)) - d*q/2 * log(2*pi) - 0.5 * sum(diag(m.WtW) * m.alpha)
-      prior <- prior + prior.W
-    }
-    if ("x" %in% names(alpha.param)) {
-      m.alpha <- alpha.param$x$m
-      prior.x <- n / 2 * sum(log(m.alpha)) - n*d/2 * log(2*pi) - 0.5 * sum(diag(m.WtW) * m.alpha)
-      prior <- prior + prior.x
-    }
-  }
-
-  return(complete.lik + prior + entropy)
+        elbo <- drop( complete_loglik + prior + entropy )
+        rm(complete_loglik)
+        rm(prior)
+        rm(entropy)
+      }
+    )
+  )
 }
-
 
 #' Variational PCA algorithm runner.
 #'
-#' @param t d-by-n data matrix.
-#' @param fit.alpha.mle Whether to fit \eqn{\alpha} via MLE.
-#' @param W.alpha Whether to fit \eqn{\alpha} for \eqn{W}.
-#' @param x.alpha Whether to fit \eqn{\alpha} for \eqn{x}.
-#' @param a.alpha \eqn{a_\alpha}.
-#' @param b.alpha \eqn{b_\alpha}.
-#' @param a.tau \eqn{a_\tau}.
-#' @param b.tau \eqn{a_\alpha}.
-#' @param beta \eqn{\beta}.
+#' @param init vpca.data object.
 #' @param min.iter Minimum number of iterations.
 #' @param max.iter Maximum number of iterations.
 #' @param epsilon The algorithm terminates if the difference in ELBO is less than \eqn{\epsilon}.
 #'
-#' @return \eqn{\mathbb{E}[W]} and ELBOs in all iterations.
+#' @return First moments and ELBOs in all iterations.
+#' @import Matrix
 #' @export
-vpca <- function(t, fit.alpha.mle = F, W.alpha = T, x.alpha = F, a.alpha = 0.001, b.alpha = 0.001,
-                 a.tau = 0.001, b.tau = 0.001, beta = 0.001,
-                 min.iter = 1000, max.iter = 3000, epsilon = 0.0001) {
-  if (!W.alpha & !x.alpha) {
-    stop("Must fit alpha for at least one of W and alpha.")
-  }
-  d <- nrow(t)
-  n <- ncol(t)
-  q <- d - 1
-
-  # initialization
-  m.x <- matrix(rnorm(q*n), nrow = q, ncol = n)
-  Sigma.x <- diag(q)
-  m.mu <- rowSums(t) / n
-  Sigma.mu <- diag(d)
-  m.W <-  matrix(rnorm(d * q), nrow = d, ncol = q)
-  Sigma.W <- diag(q)
-  # svd.t <- svd((t - m.mu) %*% t(t - m.mu))
-  # m.W <- svd.t$u[,1:q] %*% diag(sqrt(svd.t$d[1:q]))
-  if (fit.alpha.mle) {
-    alpha.param <- list(mle=T)
-    if (W.alpha) {
-      W.alpha.param <- list(m=rep(a.alpha/b.alpha, q))
-      alpha.param$W <- W.alpha.param
-    }
-    if (x.alpha) {
-      x.alpha.param <- list(m=rep(a.alpha/b.alpha, q))
-      alpha.param$x <- x.alpha.param
-    }
-  } else {
-    alpha.param <- list(mle=F)
-    W.alpha.param <- list(m=a.alpha / rep(b.alpha, q), a.tilde=a.alpha, b.tilde=rep(b.alpha, q),
-                        a=a.alpha, b=b.alpha)
-    if (W.alpha) {
-      W.alpha.param <- list(m=a.alpha / rep(b.alpha, q), a.tilde=a.alpha, b.tilde=rep(b.alpha, q),
-                            a=a.alpha, b=b.alpha)
-      alpha.param$W <- W.alpha.param
-    }
-    if (x.alpha) {
-      x.alpha.param <- list(m=a.alpha / rep(b.alpha, q), a.tilde=a.alpha, b.tilde=rep(b.alpha, q),
-                            a=a.alpha, b=b.alpha)
-      alpha.param$x <- x.alpha.param
-    }
-  }
-
-  a.tilde.tau <- a.tau
-  b.tilde.tau <- b.tau
-  m.tau <- a.tilde.tau / b.tilde.tau
-
-  elbo.old <- get.elbo(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
-                       alpha.param, a.tilde.tau, b.tilde.tau,
-                       a.tau, b.tau, beta)[1]
-  elbo <- c(elbo.old)
-
+vpcar <- function(init, min.iter = 1000, max.iter = 3000, epsilon = 0.0001) {
+  obj <- init
   count <- 0
-  while (T) {
-    if (x.alpha) {
-      x.res <- get.x(t, m.W, Sigma.W, m.mu, m.tau, alpha.param$x$m)
+  elbo_list <- c()
+  elbo_old <- -Inf
+  while (TRUE) {
+
+    obj <- update_X(obj)
+    if (obj$include_mu) {
+      obj <- update_mu(obj)
     }
-    else {
-      x.res <- get.x(t, m.W, Sigma.W, m.mu, m.tau)
-    }
-    m.x.new <- x.res[[1]]; Sigma.x.new <- x.res[[2]]
-    mu.res <- get.mu(t, m.W, m.x.new, m.tau, beta)
-    m.mu.new <- mu.res[[1]]; Sigma.mu.new <- mu.res[[2]]
+    obj <- update_W(obj)
+    obj <- update_alpha(obj)
+    obj <- update_tau(obj)
+    obj <- update_elbo(obj)
 
-    if (W.alpha) {
-      W.res <- get.W(t, m.x.new, Sigma.x.new, m.mu.new, m.tau, alpha.param$W$m)
-    }
-    else {
-      W.res <- get.W(t, m.x.new, Sigma.x.new, m.mu.new, m.tau)
-    }
-    m.W.new <- W.res[[1]]; Sigma.W.new <- W.res[[2]]
-
-    if (fit.alpha.mle) {
-      if (W.alpha) {
-        alpha.res <- get.alpha.mle(m.W.new, Sigma.W.new)
-        alpha.param$W$m <- alpha.res
-      }
-      if (x.alpha) {
-        alpha.res <- get.alpha.mle(t(m.x.new), Sigma.x.new)
-        alpha.param$x$m <- alpha.res
-      }
-    } else {
-      if (W.alpha) {
-        alpha.res <- get.alpha(m.W.new, Sigma.W.new, a.alpha, b.alpha)
-        a.tilde.alpha.new <- alpha.res[[1]]; b.tilde.alpha.new <- alpha.res[[2]]
-        m.alpha.new <- a.tilde.alpha.new / b.tilde.alpha.new
-        alpha.param$W$m <- m.alpha.new
-        alpha.param$W$a.tilde <- a.tilde.alpha.new
-        alpha.param$W$b.tilde <- b.tilde.alpha.new
-      }
-      if (x.alpha) {
-        alpha.res <- get.alpha(t(m.x.new), Sigma.x.new, a.alpha, b.alpha)
-        a.tilde.alpha.new <- alpha.res[[1]]; b.tilde.alpha.new <- alpha.res[[2]]
-        m.alpha.new <- a.tilde.alpha.new / b.tilde.alpha.new
-        alpha.param$x$m <- m.alpha.new
-        alpha.param$x$a.tilde <- a.tilde.alpha.new
-        alpha.param$x$b.tilde <- b.tilde.alpha.new
-      }
-    }
-
-
-    tau.res <- get.tau(t, m.x.new, Sigma.x.new, m.W.new,
-                       Sigma.W.new, m.mu.new, Sigma.mu.new, a.tau, b.tau)
-    a.tilde.tau.new <- tau.res[[1]]; b.tilde.tau.new <- tau.res[[2]]
-    m.tau.new <- a.tilde.tau.new / b.tilde.tau.new
-
-    m.x <- m.x.new
-    Sigma.x <- Sigma.x.new
-    m.mu <- m.mu.new
-    Sigma.mu <- Sigma.mu.new
-    m.W <- m.W.new
-    Sigma.W <- Sigma.W.new
-    # a.tilde.alpha <- a.tilde.alpha.new
-    # b.tilde.alpha <- b.tilde.alpha.new
-    # m.alpha <- m.alpha.new
-    a.tilde.tau <- a.tilde.tau.new
-    b.tilde.tau <- b.tilde.tau.new
-    m.tau <- m.tau.new
-
-    elbo.new <- get.elbo(t, m.x, Sigma.x, m.mu, Sigma.mu, m.W, Sigma.W,
-                         alpha.param, a.tilde.tau, b.tilde.tau,
-                         a.tau, b.tau, beta)[1]
     count <- count + 1
-    diff <- abs(elbo.new - elbo.old)
-    elbo.old <- elbo.new
-    elbo <- c(elbo, elbo.new)
+    if (obj$elbo - elbo_old < 0) {
+      cat("\nELBO decreases at iteration no.", count, "\n")
+    }
+    diff <- abs(obj$elbo - elbo_old)
+    elbo_old <- obj$elbo
+    elbo_list <- c(elbo_list, elbo_old)
     if (diff <= epsilon && count >= min.iter) {
       break
     }
     if (count == max.iter) {
-      print("Maximum number of iteration reached.")
+      cat("\nMaximum number of iteration reached.\n")
       break
     }
   }
-  return(list(m.W, Sigma.W, m.x, Sigma.x, m.tau, m.mu, alpha.param, elbo))
+  return(
+    list(
+      E_W = obj$E_W, E_X = obj$E_X, E_mu = obj$E_mu, Sigma_W = obj$Sigma_W, Sigma_X = obj$Sigma_X,
+      E_alpha = obj$E_alpha, E_tau = obj$E_tau, elbo_list = elbo_list
+    )
+  )
 }
