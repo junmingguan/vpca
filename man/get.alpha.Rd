@@ -2,7 +2,7 @@
 % Please edit documentation in R/vpca.R
 \name{get.alpha}
 \alias{get.alpha}
-\title{Title Update \eqn{Q(\mathbf{\alpha})}.}
+\title{Update \eqn{Q(\mathbf{\alpha})}.}
 \usage{
 get.alpha(m.W, Sigma.W, a.alpha, b.alpha)
 }
@@ -19,5 +19,5 @@ get.alpha(m.W, Sigma.W, a.alpha, b.alpha)
 \eqn{\tilde{a}_\alpha} and \eqn{\tilde{b}_\alpha}.
 }
 \description{
-Title Update \eqn{Q(\mathbf{\alpha})}.
+Update \eqn{Q(\mathbf{\alpha})}.
 }

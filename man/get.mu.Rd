@@ -2,7 +2,7 @@
 % Please edit documentation in R/vpca.R
 \name{get.mu}
 \alias{get.mu}
-\title{Title Update \eqn{Q(\mathbf{\mu})}.}
+\title{Update \eqn{Q(\mathbf{\mu})}.}
 \usage{
 get.mu(t, m.W, m.x, m.tau, beta)
 }
@@ -21,5 +21,5 @@ get.mu(t, m.W, m.x, m.tau, beta)
 \eqn{\mathbb{E}[\mu]} and \eqn{\Sigma_\mu}.
 }
 \description{
-Title Update \eqn{Q(\mathbf{\mu})}.
+Update \eqn{Q(\mathbf{\mu})}.
 }

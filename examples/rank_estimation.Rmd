@@ -1,0 +1,877 @@
+---
+title: "rank_estimation"
+output: pdf_document
+date: "2025-06-02"
+---
+```{r}
+library(ggplot2)
+library(devtools)
+document()
+load_all()
+library(vpca)
+```
+
+#### Functions
+
+```{r}
+
+calculate_nu_H_star_threshold <- function(xi, alpha) {
+  tau_unbar <- 2.5129*sqrt(alpha)
+  x_unbar <- (1+tau_unbar)*(1+alpha/tau_unbar)
+  # Calculate the term (x-1) / (1 - x*xi)
+  denominator_term1 <- 1 - x_unbar * xi
+  if (denominator_term1 == 0) {
+    warning("Denominator (1 - x*xi) is zero, division by zero.")
+    return(NaN)
+  }
+  term1 <- (x_unbar - 1) / denominator_term1
+  # Calculate the term ( (x-1)/(1-x*xi) - alpha )
+  term2 <- term1 - alpha
+  # Calculate the discriminant (term under the square root)
+  discriminant <- term2^2 - 4 * alpha
+  if (discriminant < 0) {
+    warning("Term under the square root is negative, resulting in complex numbers not handled here (NaN returned).")
+    return(NaN)
+  }
+  # Calculate the numerator
+  numerator <- term2 + sqrt(discriminant)
+  # Calculate the final result (right-hand side of the inequality)
+  result <- numerator / 2
+  return(result)
+}
+
+calculate_KN_RMT_prob_50_threshold <- function(d, n, K, conf=0.05) {
+  fac = sqrt((d-K)/n)
+  thres <- fac * (1 + sqrt(KN_s_Wishart(0.05, 1) *(1+fac)  )/(d-K)^(1/3)  )
+  return(thres)
+}
+
+generate_rank_k <- function(z, d=10, n=100, sigma_e=1) {
+  LFt <- matrix(0, nrow=d, ncol=n)
+  alpha = d/n
+  tau_unbar <- 2.5129*sqrt(alpha)
+  x_unbar <- (1+tau_unbar)*(1+alpha/tau_unbar)
+  K <- length(z)
+  if (K>0) {
+    for (k in 1:K) {
+      L <- rnorm(d)
+      F <- rnorm(n)
+      L = L / sum(L^2)^0.5
+      F = F / sum(F^2)^0.5
+      # if (k == 1) {
+      #   g = z*sqrt(n*sigma_e)
+      # 
+      # } else {
+      #   g <- runif(1, z*sqrt(n*sigma_e), sqrt(100*n*sigma_e))
+      # }
+      # LFt = LFt+ sqrt(z[k]*n*sigma_e)*L%*%t(F)
+      LFt[k,] = sqrt(z[k])*rnorm(n, 0, 1)
+    }
+  }
+  return(LFt + matrix(rnorm(d*n, sd=sigma_e^0.5), nrow=d, ncol=n))
+}
+
+get_UDVt <-function(U, V) {
+  U_norms <- sqrt(colSums(U^2)) 
+  V_norms <- sqrt(colSums(V^2))
+
+  D <- U_norms * V_norms
+  U <- sweep(U, 2, U_norms, FUN = "/")
+  V <- sweep(V, 2, V_norms, FUN = "/")
+  return(list(U=U, D=D, V=V))
+}
+
+bishop_evb_pca_rank <- function(Y, q) {
+  res<- init_svd(Matrix(Y), q = q, include_mu = FALSE, alpha_for_X = FALSE, alpha_MLE = FALSE)
+  res <- vpcar(res, max.iter = 1000, min.iter = 1, epsilon=0.0001)
+  res_scaled <- get_UDVt(res$E_W, t(res$E_X))
+  return(list(gamma_est=res_scaled$D, estimated_rank=sum(res_scaled$D>1e-10)))
+}
+```
+
+##### check rank
+
+```{r}
+check_rank_est <- function(z, d=10, n=200, n_rep=100, sigma2=NULL, include_bishop=TRUE) {
+  K = length(z)
+  success_evb_global <- 0
+  success_evb_local <- 0
+  success_evb_bishop <- 0
+  success_KN <- 0
+  
+  over_evb_global <- 0
+  over_evb_local <- 0
+  over_evb_bishop <- 0
+  over_KN <- 0
+  
+  under_evb_global <- 0
+  under_evb_local <- 0
+  under_evb_bishop <- 0
+  under_KN <- 0
+  pass_thereotical_thres <- 0
+  for (i in 1:n_rep) {
+    if (i == 50 ) {print(i)}
+    Y <- generate_rank_k(z=z, d=d, n=n) 
+    alpha = d/n
+    tau_unbar <- 2.5129*sqrt(alpha)
+    x_unbar <- (1+tau_unbar)*(1+alpha/tau_unbar)
+    
+    
+    
+    svd_Y <- svd(Y, nu = d, nv = d)
+    # if (svd_Y$d[1]^2/n > x_unbar) {
+    if (svd_Y$d[K] > sqrt(x_unbar*n)) {
+      pass_thereotical_thres = pass_thereotical_thres + 1
+    }
+    
+    res_1 = evb_global_pca(svd_Y, L=d, M=n, H=d-1, sigma2 = sigma2)
+    if (res_1$estimated_rank == K) {
+      success_evb_global = success_evb_global + 1
+    } else if (res_1$estimated_rank < K) {
+      under_evb_global = under_evb_global + 1
+    } else {
+      over_evb_global = over_evb_global + 1
+    }
+    
+    res_2 = evb_ite_pca(svd_Y, L=d, M=n, local = TRUE)
+    if (res_2$estimated_rank == K) {
+      success_evb_local = success_evb_local + 1
+    } else if (res_2$estimated_rank < K) {
+      under_evb_local = under_evb_local + 1
+    } else {
+      over_evb_local = over_evb_local + 1
+    }
+    
+    if (include_bishop) {
+      if (bishop_evb_pca_rank(Y, q=d-1)$estimated_rank == K) {
+        success_evb_bishop = success_evb_bishop + 1
+      } else if (bishop_evb_pca_rank(Y, q=d-1)$estimated_rank < K) {
+        under_evb_bishop = under_evb_bishop + 1
+      } else {
+        over_evb_bishop = over_evb_bishop + 1
+      }
+    }
+    
+    
+    KN = KN_rankEst(svd_Y$d^2/n, n, 1, alpha=0.01, max_kk = d, sigma2 = sigma2)
+    if (KN$K == K) {
+      success_KN = success_KN + 1
+    } else if (KN$K < K) {
+      under_KN = under_KN + 1
+    } else {
+      over_KN = over_KN + 1
+    }
+  }
+  return(list(
+    success_evb_bishop=success_evb_bishop/n_rep, 
+    success_evb_global=success_evb_global/n_rep,
+    success_evb_local=success_evb_local/n_rep, 
+    success_KN=success_KN/n_rep,
+    under_evb_bishop = under_evb_bishop/n_rep,
+    under_evb_global = under_evb_global / n_rep,
+    under_evb_local = under_evb_local / n_rep,
+    under_KN = under_KN / n_rep,
+    over_evb_bishop = over_evb_bishop / n_rep,
+    over_evb_global = over_evb_global / n_rep,
+    over_evb_local = over_evb_local / n_rep,
+    over_KN = over_KN / n_rep,
+    pass_thres = pass_thereotical_thres/n_rep))
+
+}
+```
+
+##### KN theory
+```{r}
+
+r_k <- function(lam, n) {
+  K = length(lam)
+  lam <- sort(lam, decreasing = TRUE)
+  lam_j <- lam[1:(K-1)]
+  lam_K <- lam[K]
+  return( lam_K - sum(lam_j / (lam_j - lam_K)) / n )
+}
+tau <- function(lam, p, K, n, sigma2 = 1) {
+  # gamma <- (p - K) / n
+  # gamma <- p / n
+  # det_thresh <- sigma2 * sqrt(gamma)
+  # if (lam <= det_thresh) {
+  #   return(sigma2 * (1 + sqrt(gamma))^2)
+  # } else {
+  #   return((lam + sigma2) * (1 + gamma / lam))
+  # }
+  if (K != length(lam)) stop("K must match length of lam.")
+  
+  r = ifelse(length(lam) == 1, lam, r_k(lam, n))
+  return((r + 1) * (1 + (p - K) / n / r))
+}
+
+delta <- function(lam, p, K, n, sigma2 = 1, beta = 1) {
+  # gamma <- (p - K) / n
+  # term <- 1 - gamma * (sigma2^2) / (lam^2)
+  # term <- max(term, 0) # Avoid negative values
+  # return(sqrt(2 / beta) * (lam + sigma2) * sqrt(term))
+  r = ifelse(length(lam) == 1, lam, r_k(lam, n))
+  return( sqrt(2) * (1 + r) * sqrt(1 - (p-K)/n / r^2) )
+}
+
+threshold_T <- function(p, K, n, alpha, sigma2=1, beta = 1) {
+  pk <- p - K
+  # mu_xi =KN_mu_sigma(n, p)
+  # mu_np = mu_xi$mu_np
+  # xi_np = sigma_np
+  mu_np <- (sqrt(n - 0.5) + sqrt(pk - 0.5))^2 / n
+  xi_np <- sqrt(mu_np / n) * (1 / sqrt(n - 0.5) + 1 / sqrt(pk - 0.5))^(1/3)
+
+  s_alpha <- KN_s_Wishart(alpha)
+  return(sigma2 * (mu_np + s_alpha * xi_np))
+}
+
+find_prob_greater_than_K <- function(lam, p, n, K, alpha = 0.01, sigma2 = 1, beta = 1) {
+  T_val <- threshold_T(p, K, n, alpha, beta, sigma2=sigma2)
+  tau_val <- tau(lam, p, K, n, sigma2 = sigma2)
+  delta_val <- delta(lam, p, K, n, beta, sigma2 = sigma2)
+  quant = sqrt(n) * (T_val - tau_val) / delta_val
+  return(1 - pnorm(quant))
+}
+
+solve_lambda <- function(p, n, K, lam_res=NULL, alpha = 0.01, sigma2 = 1, beta = 1, conf = 0.95) {
+  # gamma <- (p - K) / n
+  gamma <- p / n
+  det_thresh <- sigma2 * sqrt(gamma)
+  if (is.null(lam_res) && K > 1) {
+    stop("K>1. need to input the remaining lambdas.")
+  }
+  z <- qnorm(conf)
+  T_val <- threshold_T(p, K, n, alpha, beta=beta, sigma2=sigma2)
+  
+  # Define the function g(lambda) - z_{1-beta} = 0 for the root finder
+  # This function must be defined inside so it can access T_val, z_beta, etc.
+  func_to_solve <- function(lam) {
+    tau_val <- tau(c(lam_res, lam), p, K, n, sigma2=sigma2)
+    delta_val <- delta(c(lam_res, lam), p, K, n, beta, sigma2=sigma2)
+    # Handle cases where delta_val is zero to avoid division by zero
+    if (delta_val == 0) return(-Inf) 
+    return(sqrt(n) * (tau_val - T_val) / delta_val - z)
+  }
+  
+  # Bracketing interval for the root finder
+  lam_min <- det_thresh + 1e-8
+  lam_max <- det_thresh + 1e-8 + 10 * (abs(z)+0.1) # Practical upper bound
+  s_alpha <- KN_s_Wishart(alpha)
+  # x = sqrt((p-K) / n)
+  # print(x * (1+ sqrt(s_alpha * (1+x)) / (p-K)^(1/3) ) )
+  
+  # Solve using uniroot (similar to scipy's brentq method)
+  # uniroot returns a list; the root is in the '$root' element
+  sol <- uniroot(func_to_solve, interval = c(lam_min, lam_max))
+  return(sol$root)
+}
+
+```
+
+```{r}
+solve_lambda(10, 100, 1, alpha=0.01, beta = 1, conf = 0.2)
+
+find_prob_greater_than_K(0.4946552, 10, 100, 1, 0.01)
+```
+
+#### K=1
+
+##### n=200, d=20
+
+```{r}
+d=20
+n=200
+
+# z_list <- c(0.2, 0.4, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.05, 1.1, 1.15, 1.2, 1.6, 2.0)
+
+z_list <- c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3)
+
+success_evb_bishop <- c()
+success_evb_global <- c()
+success_evb_local <- c()
+success_KN <- c()
+
+under_evb_bishop <- c()
+under_evb_global <- c()
+under_evb_local <- c()
+under_KN <- c()
+
+over_evb_bishop <- c()
+over_evb_global <- c()
+over_evb_local <- c()
+over_KN <- c()
+
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(z), d=d, n=n, n_rep = 200, sigma2 = NULL, include_bishop=T)
+  success_evb_bishop <- c(success_evb_bishop, res$success_evb_bishop)
+  success_KN <- c(success_KN, res$success_KN)
+  success_evb_global <- c(success_evb_global, res$success_evb_global)
+  success_evb_local <- c(success_evb_local, res$success_evb_local)
+  
+  
+  over_evb_bishop <- c(over_evb_bishop, res$over_evb_bishop)
+  over_KN <- c(over_KN, res$over_KN)
+  over_evb_global <- c(over_evb_global, res$over_evb_global)
+  over_evb_local <- c(over_evb_local, res$over_evb_local)
+  
+  under_evb_bishop <- c(under_evb_bishop, res$under_evb_bishop)
+  under_KN <- c(under_KN, res$under_KN)
+  under_evb_global <- c(under_evb_global, res$under_evb_global)
+  under_evb_local <- c(under_evb_local, res$under_evb_local)
+}
+# res=check_rank_est(1, z=1, d=d, n=n, n_rep = 100) #sqrt(sqrt(d/n)*2.5129) 0.7599053
+# df200 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local)
+```
+
+```{r}
+df200 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local)
+```
+
+```{r}
+df200 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local,
+                   under_evb_bishop=under_evb_bishop, under_evb_global=under_evb_global,
+                   under_KN=under_KN, under_evb_local=under_evb_local,
+                   over_evb_bishop=over_evb_bishop, over_evb_global=over_evb_global,
+                   over_KN=over_KN, over_evb_local=over_evb_local)
+```
+
+
+##### n=600, d=60
+
+```{r}
+d = 60
+n = 600
+z_list <- c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3)
+
+success_evb_bishop <- c()
+success_evb_global <- c()
+success_evb_local <- c()
+success_KN <- c()
+
+under_evb_bishop <- c()
+under_evb_global <- c()
+under_evb_local <- c()
+under_KN <- c()
+
+over_evb_bishop <- c()
+over_evb_global <- c()
+over_evb_local <- c()
+over_KN <- c()
+
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(z), d=d, n=n, n_rep = 200, sigma2 = NULL, include_bishop=T)
+  success_evb_bishop <- c(success_evb_bishop, res$success_evb_bishop)
+  success_KN <- c(success_KN, res$success_KN)
+  success_evb_global <- c(success_evb_global, res$success_evb_global)
+  success_evb_local <- c(success_evb_local, res$success_evb_local)
+  
+  
+  over_evb_bishop <- c(over_evb_bishop, res$over_evb_bishop)
+  over_KN <- c(over_KN, res$over_KN)
+  over_evb_global <- c(over_evb_global, res$over_evb_global)
+  over_evb_local <- c(over_evb_local, res$over_evb_local)
+  
+  under_evb_bishop <- c(under_evb_bishop, res$under_evb_bishop)
+  under_KN <- c(under_KN, res$under_KN)
+  under_evb_global <- c(under_evb_global, res$under_evb_global)
+  under_evb_local <- c(under_evb_local, res$under_evb_local)
+}
+df500 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local)
+```
+
+```{r}
+df600 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local,
+                   under_evb_bishop=under_evb_bishop, under_evb_global=under_evb_global,
+                   under_KN=under_KN, under_evb_local=under_evb_local,
+                   over_evb_bishop=over_evb_bishop, over_evb_global=over_evb_global,
+                   over_KN=over_KN, over_evb_local=over_evb_local)
+```
+
+
+
+#### recreating fig 4 in KN 2009
+
+```{r}
+z_list = c(0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5)
+
+n = 100
+d = 10
+success_KN <- c()
+over_KN <- c()
+prob_list = c()
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(z), d=d, n=n, n_rep = 1000, sigma2 = NULL, include_bishop=F)
+  prob = find_prob_greater_than_K(z, d, n, 1)
+  prob_list <- c(prob_list, prob)
+  success_KN <- c(success_KN, res$success_KN)
+
+  over_KN <- c(over_KN, res$over_KN)
+}
+
+
+```
+
+```{r}
+n = 100
+d = 20
+success_KN_3 <- c()
+over_KN_3 <- c()
+prob_list_3 = c()
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(20, 15, z), d=d, n=n, n_rep = 1000, sigma2 = NULL, include_bishop=F)
+  prob = find_prob_greater_than_K(c(20, 15, z), d, n, 3)
+  prob_list_3 <- c(prob_list_3, prob)
+  success_KN_3 <- c(success_KN_3, res$success_KN)
+
+  over_KN_3 <- c(over_KN_3, res$over_KN)
+}
+```
+
+```{r}
+df <- data.frame(
+  z = z_list,
+  y1 = success_KN + over_KN,
+  y2 = prob_list,
+  y3 = success_KN_3 + over_KN_3,
+  y4 = prob_list_3
+)
+
+
+ggplot(df, aes(x = z)) +
+  geom_point(aes(y = y1, color = 'Empirical'), size = 2) + 
+  geom_line(aes(y = y2, color = 'Theoretical'), linewidth = 1) +
+  geom_point(aes(y = y3, color = 'Empirical'), size = 2) +
+  geom_line(aes(y = y4, color = 'Theoretical'), linewidth = 1) +
+  labs(
+    x = expression(lambda),
+    y = expression(P(hat(K)>=K)),
+    title = "n=100"
+  ) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Empirical" = "blue", "Theoretical" = "red")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+
+#### K=3
+
+##### n = 200
+```{r}
+d = 20 #20
+n = 200 #200
+z_list <- c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3)
+
+success_evb_bishop <- c()
+success_evb_global <- c()
+success_evb_local <- c()
+success_KN <- c()
+
+under_evb_bishop <- c()
+under_evb_global <- c()
+under_evb_local <- c()
+under_KN <- c()
+
+over_evb_bishop <- c()
+over_evb_global <- c()
+over_evb_local <- c()
+over_KN <- c()
+
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(10, 4, z), d=d, n=n, n_rep = 200, sigma2 = NULL, include_bishop=T)
+  success_evb_bishop <- c(success_evb_bishop, res$success_evb_bishop)
+  success_KN <- c(success_KN, res$success_KN)
+  success_evb_global <- c(success_evb_global, res$success_evb_global)
+  success_evb_local <- c(success_evb_local, res$success_evb_local)
+  
+  
+  over_evb_bishop <- c(over_evb_bishop, res$over_evb_bishop)
+  over_KN <- c(over_KN, res$over_KN)
+  over_evb_global <- c(over_evb_global, res$over_evb_global)
+  over_evb_local <- c(over_evb_local, res$over_evb_local)
+  
+  under_evb_bishop <- c(under_evb_bishop, res$under_evb_bishop)
+  under_KN <- c(under_KN, res$under_KN)
+  under_evb_global <- c(under_evb_global, res$under_evb_global)
+  under_evb_local <- c(under_evb_local, res$under_evb_local)
+}
+```
+
+```{r}
+df200_K3 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local,
+                   under_evb_bishop=under_evb_bishop, under_evb_global=under_evb_global,
+                   under_KN=under_KN, under_evb_local=under_evb_local,
+                   over_evb_bishop=over_evb_bishop, over_evb_global=over_evb_global,
+                   over_KN=over_KN, over_evb_local=over_evb_local)
+```
+
+##### n = 600
+```{r}
+d = 60 #20
+n = 600 #200
+z_list <- c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3)
+
+z_list = 0.6
+success_evb_bishop <- c()
+success_evb_global <- c()
+success_evb_local <- c()
+success_KN <- c()
+
+under_evb_bishop <- c()
+under_evb_global <- c()
+under_evb_local <- c()
+under_KN <- c()
+
+over_evb_bishop <- c()
+over_evb_global <- c()
+over_evb_local <- c()
+over_KN <- c()
+
+
+for (z in z_list) {
+  print(z)
+  res=check_rank_est(z=c(10, 4, z), d=d, n=n, n_rep = 200, sigma2 = NULL, include_bishop=T)
+  success_evb_bishop <- c(success_evb_bishop, res$success_evb_bishop)
+  success_KN <- c(success_KN, res$success_KN)
+  success_evb_global <- c(success_evb_global, res$success_evb_global)
+  success_evb_local <- c(success_evb_local, res$success_evb_local)
+  
+  
+  over_evb_bishop <- c(over_evb_bishop, res$over_evb_bishop)
+  over_KN <- c(over_KN, res$over_KN)
+  over_evb_global <- c(over_evb_global, res$over_evb_global)
+  over_evb_local <- c(over_evb_local, res$over_evb_local)
+  
+  under_evb_bishop <- c(under_evb_bishop, res$under_evb_bishop)
+  under_KN <- c(under_KN, res$under_KN)
+  under_evb_global <- c(under_evb_global, res$under_evb_global)
+  under_evb_local <- c(under_evb_local, res$under_evb_local)
+}
+```
+
+```{r}
+df600_K3 = data.frame(z=z_list, success_evb_bishop=success_evb_bishop, success_evb_global=success_evb_global, success_KN=success_KN, success_evb_local=success_evb_local,
+                   under_evb_bishop=under_evb_bishop, under_evb_global=under_evb_global,
+                   under_KN=under_KN, under_evb_local=under_evb_local,
+                   over_evb_bishop=over_evb_bishop, over_evb_global=over_evb_global,
+                   over_KN=over_KN, over_evb_local=over_evb_local)
+```
+
+
+
+```{r}
+saveRDS(list(df200=df200, df600=df600, df200_K3=df200_K3, df600_K3=df600_K3, df_large_n=df_large_n), file='../data/success_rate.rds')
+```
+
+#### large n
+
+```{r}
+success_evb_global <- c()
+over_evb_global <- c()
+success_evb_local <- c()
+over_evb_local <- c()
+# prob_list = c()
+z_list <- c(0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2, 2.4, 2.6, 2.8, 3)
+z_list = c(calculate_nu_H_star_threshold(1/10, 1/10))
+for (n in (1:10)*100) {
+  print(n)
+  res=check_rank_est(z=c(rep(10, n/10/10-1), z_list), d=n/10, n=n, n_rep = 500, sigma2 = NULL, include_bishop=F) #runif(n/2/10-1, 10, 20), z_list
+  # prob = find_prob_greater_than_K(c(z), d, n, 1)
+  # prob_list <- c(prob_list, prob)
+  # success_KN <- c(success_KN, res$success_KN)
+  success_evb_global <- c(success_evb_global, res$success_evb_global)
+  success_evb_local <- c(success_evb_local, res$success_evb_local)
+
+  # over_KN <- c(over_KN, res$over_KN)
+  over_evb_global <- c(over_evb_global, res$over_evb_global)
+  over_evb_local <- c(over_evb_local, res$over_evb_local)
+}
+```
+
+
+
+```{r}
+df_large_n <- data.frame(
+  n = (1:10)*100,
+  y1 = success_evb_global,
+  y2 = success_evb_local
+)
+
+
+ggplot(df_large_n, aes(x = n)) +
+  geom_point(aes(y = y1, color = 'EVB global'), size = 2) +
+  geom_line(aes(y = y1, color = 'EVB global'), linewidth = 1) +
+  labs(
+    x = expression(n),
+    y = expression(P(hat(K)==K))
+    # title = "n=100"
+  ) +
+  geom_hline(yintercept = 1, linetype = 'dashed') +
+  # scale_color_manual(
+  #   name = NULL,
+  #   values = c("RMT" = "blue", "EVB global" = "red" ,"Theoretical RMT" = 'green')
+  # ) +
+  theme_minimal() +
+  theme(
+    legend.position="none", # remove legend
+    text = element_text(size = 15),
+    plot.title = element_text(hjust = 0.5),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black"),
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+
+#### RN: convergence to asymptotic limit
+
+
+
+```{r}
+sigma2 <- 1.0
+c_val <- 10/100
+beta <- 1
+conf <- 0.95
+alpha <- 0.01
+
+lambda_DET <- sigma2 * sqrt(c_val)
+
+
+n_vals <- 10^seq(from = 2, to = 6, length.out = 50) # n = 100 to 1,000,000
+p_vals <- c_val * n_vals
+K <- 1
+lambda_vals <- mapply(solve_lambda, p = p_vals, n = n_vals, 
+                      MoreArgs = list(K = K, alpha = alpha, 
+                                      beta = beta, conf = conf))
+
+
+
+
+plot_data <- data.frame(
+  n_vals = n_vals,
+  lambda_vals = lambda_vals
+)
+
+
+# Convert to ggplot
+ggplot(plot_data, aes(x = n_vals, y = sqrt(lambda_vals))) +
+  geom_line(aes(color = "RMT", linetype = "RMT", linewidth = "RMT")) +
+  geom_hline(aes(yintercept = sqrt(lambda_DET), color = "DET", linetype = "DET", linewidth = "DET")) +
+  scale_color_manual(
+    name = NULL,
+    values = c("RMT" = "blue", "DET" = "red"),
+    labels = c(expression(lambda[RMT]), expression(lambda[DET]))
+  ) +
+  scale_linetype_manual(
+    name = NULL, # No legend title
+    values = c("RMT" = "solid", "DET" = "dashed"),
+    labels = c(expression(lambda[RMT]), expression(lambda[DET]))
+  ) +
+  scale_linewidth_manual(
+    name = NULL, # No legend title
+    values = c("RMT" = 1, "DET" = 1),
+    labels = c(expression(lambda[RMT]), expression(lambda[DET]))
+  ) +
+
+  # Set the x-axis to a log scale
+  scale_x_log10() +
+  coord_cartesian(ylim = c(0.5, 1.1)) +
+  labs(
+    x = expression(n),
+    y = expression(lambda)
+  ) +
+
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+#### plots
+
+##### K=1
+```{r}
+d=20
+n=200
+K=1
+thres_RMT <- solve_lambda(d, n, 1)
+# vline_data <- data.frame(
+#   x = c(sqrt(1/10)*2.5129,
+#         calculate_nu_H_star_threshold(1/10, 1/10),
+#         thres_RMT),
+#   type = c("EVB global threshold (asymptotic)", "EVB global threshold (finite sample)", "RMT threshold"))
+  
+ggplot(df200, aes(x = z)) +
+  geom_line(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_point(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_line(aes(y = success_evb_global, color = "EVB global")) +
+  geom_point(aes(y = success_evb_global, color = "EVB global")) +
+  geom_line(aes(y = success_KN, color = "RMT")) +
+  geom_point(aes(y = success_KN, color = "RMT")) +
+  geom_line(aes(y = success_evb_local, color = "EVB local")) +
+  geom_point(aes(y = success_evb_local, color = "EVB local")) +
+  labs(x = expression(lambda), y =  expression(P(hat(K)==K)), color = "Method") +
+  # annotate("text", x = min(df200$z)+0.5, y = max(df200[,-1]), 
+  #          label = "n=200 d=20 K=1", hjust = 1, vjust = 1, size = 4) +
+  geom_vline(xintercept = sqrt(d/n), color = "grey") +
+  geom_vline(xintercept = sqrt(d/n)*2.5129, linetype = "solid") +
+  geom_vline(xintercept = calculate_nu_H_star_threshold(K/d, d/n), linetype = "dotted") +
+  geom_vline(xintercept = thres_RMT, linetype = "dashed") +
+  # geom_vline(data = vline_data, aes(xintercept = x, linetype = type), color = "black") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 15),
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+```{r}
+d=60
+n=600
+K=1
+thres_RMT <- solve_lambda(d, n, 1)
+# vline_data <- data.frame(
+#   x = c(sqrt(1/10)*2.5129,
+#         calculate_nu_H_star_threshold(1/10, 1/10),
+#         thres_RMT),
+#   type = c("EVB global threshold (asymptotic)", "EVB global threshold (finite sample)", "RMT threshold"))
+  
+ggplot(df600, aes(x = z)) +
+  geom_line(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_point(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_line(aes(y = success_evb_global, color = "EVB global")) +
+  geom_point(aes(y = success_evb_global, color = "EVB global")) +
+  geom_line(aes(y = success_KN, color = "RMT")) +
+  geom_point(aes(y = success_KN, color = "RMT")) +
+  geom_line(aes(y = success_evb_local, color = "EVB local")) +
+  geom_point(aes(y = success_evb_local, color = "EVB local")) +
+  labs(x = expression(lambda), y =  expression(P(hat(K)==K)), color = "Method") +
+  # annotate("text", x = min(df200$z)+0.5, y = max(df200[,-1]), 
+  #          label = "n=200 d=20 K=1", hjust = 1, vjust = 1, size = 4) +
+  geom_vline(xintercept = sqrt(d/n), color = "grey") +
+  geom_vline(xintercept = sqrt(d/n)*2.5129, linetype = "solid") +
+  geom_vline(xintercept = calculate_nu_H_star_threshold(K/d, d/n), linetype = "dotted") +
+  geom_vline(xintercept = thres_RMT, linetype = "dashed") +
+  # geom_vline(data = vline_data, aes(xintercept = x, linetype = type), color = "black") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 15),
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+
+
+##### K=3
+```{r}
+d=20
+n=200
+K=3
+thres_RMT <- solve_lambda(d, n, K, c(10, 4))
+# vline_data <- data.frame(
+#   x = c(sqrt(1/10)*2.5129,
+#         calculate_nu_H_star_threshold(1/10, 1/10),
+#         thres_RMT),
+#   type = c("EVB global threshold (asymptotic)", "EVB global threshold (finite sample)", "RMT threshold"))
+  
+ggplot(df200_K3, aes(x = z)) +
+  geom_line(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_point(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_line(aes(y = success_evb_global, color = "EVB global")) +
+  geom_point(aes(y = success_evb_global, color = "EVB global")) +
+  geom_line(aes(y = success_KN, color = "RMT")) +
+  geom_point(aes(y = success_KN, color = "RMT")) +
+  geom_line(aes(y = success_evb_local, color = "EVB local")) +
+  geom_point(aes(y = success_evb_local, color = "EVB local")) +
+  labs(x = expression(lambda), y =  expression(P(hat(K)==K)), color = "Method") +
+  # annotate("text", x = min(df200$z)+0.5, y = max(df200[,-1]), 
+  #          label = "n=200 d=20 K=1", hjust = 1, vjust = 1, size = 4) +
+  geom_vline(xintercept = sqrt(d/n)*2.5129, linetype = "solid") +
+  geom_vline(xintercept = calculate_nu_H_star_threshold(K/d, d/n), linetype = "dotted") +
+  geom_vline(xintercept = thres_RMT, linetype = "dashed") +
+  geom_vline(xintercept = sqrt(d/n), color = "grey") +
+  # geom_vline(data = vline_data, aes(xintercept = x, linetype = type), color = "black") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 15),
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+
+```{r}
+d=60
+n=600
+K=3
+thres_RMT <- solve_lambda(d, n, K, c(10, 4))
+# vline_data <- data.frame(
+#   x = c(sqrt(1/10)*2.5129,
+#         calculate_nu_H_star_threshold(1/10, 1/10),
+#         thres_RMT),
+#   type = c("EVB global threshold (asymptotic)", "EVB global threshold (finite sample)", "RMT threshold"))
+  
+ggplot(df600_K3, aes(x = z)) +
+  geom_line(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_point(aes(y = success_evb_bishop, color = "VBPCA")) +
+  geom_line(aes(y = success_evb_global, color = "EVB global")) +
+  geom_point(aes(y = success_evb_global, color = "EVB global")) +
+  geom_line(aes(y = success_KN, color = "RMT")) +
+  geom_point(aes(y = success_KN, color = "RMT")) +
+  geom_line(aes(y = success_evb_local, color = "EVB local")) +
+  geom_point(aes(y = success_evb_local, color = "EVB local")) +
+  labs(x = expression(lambda), y =  expression(P(hat(K)==K)), color = "Method") +
+  # annotate("text", x = min(df200$z)+0.5, y = max(df200[,-1]), 
+  #          label = "n=200 d=20 K=1", hjust = 1, vjust = 1, size = 4) +
+  geom_vline(xintercept = sqrt(d/n)*2.5129, linetype = "solid") +
+  geom_vline(xintercept = calculate_nu_H_star_threshold(K/d, d/n), linetype = "dotted") +
+  geom_vline(xintercept = thres_RMT, linetype = "dashed") +
+  geom_vline(xintercept = sqrt(d/n), color = "grey") +
+  # geom_vline(data = vline_data, aes(xintercept = x, linetype = type), color = "black") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 15),
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+```
+

@@ -2,7 +2,7 @@
 % Please edit documentation in R/vpca.R
 \name{get.elbo}
 \alias{get.elbo}
-\title{Title Compute ELBO with given moments,}
+\title{Compute ELBO with given moments,}
 \usage{
 get.elbo(
   t,
@@ -12,12 +12,9 @@ get.elbo(
   Sigma.mu,
   m.W,
   Sigma.W,
-  a.tilde.alpha,
-  b.tilde.alpha,
+  alpha.param,
   a.tilde.tau,
   b.tilde.tau,
-  a.alpha,
-  b.alpha,
   a.tau,
   b.tau,
   beta
@@ -27,5 +24,5 @@ get.elbo(
 ELBO \eqn{\mathcal{L}(\theta)}.
 }
 \description{
-Title Compute ELBO with given moments,
+Compute ELBO with given moments,
 }

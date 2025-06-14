@@ -2,9 +2,9 @@
 % Please edit documentation in R/vpca.R
 \name{get.x}
 \alias{get.x}
-\title{Title Update \eqn{Q(X)}.}
+\title{Update \eqn{Q(X)}.}
 \usage{
-get.x(t, m.W, Sigma.W, m.mu, m.tau)
+get.x(t, m.W, Sigma.W, m.mu, m.tau, m.alpha)
 }
 \arguments{
 \item{t}{d-by-n data matrix.}
@@ -21,5 +21,9 @@ get.x(t, m.W, Sigma.W, m.mu, m.tau)
 \eqn{\mathbb{E}[\mathbf{x}_n]} and \eqn{\Sigma_\mathbf{x}}.
 }
 \description{
-Title Update \eqn{Q(X)}.
+Update \eqn{Q(X)}.
 }
+\section{TODO}{
+ can matrix inversion be avoided?
+}
+

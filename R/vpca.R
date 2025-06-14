@@ -5,7 +5,7 @@
 #' @param Sigma.W \eqn{\Sigma_\mathbf{W}}.
 #' @param m.mu \eqn{\mathbb{E}_Q[\mu]}.
 #' @param m.tau \eqn{\mathbb{E}_Q[\tau]}.
-#' @section TODO: can inversion be avoided?
+#' @section TODO: can matrix inversion be avoided?
 #'
 #' @return \eqn{\mathbb{E}[\mathbf{x}_n]} and \eqn{\Sigma_\mathbf{x}}.
 get.x <- function(t, m.W, Sigma.W, m.mu, m.tau, m.alpha) {
@@ -352,7 +352,7 @@ vpca <- function(t, fit.alpha.mle = F, W.alpha = T, x.alpha = F, a.alpha = 0.001
     diff <- abs(elbo.new - elbo.old)
     elbo.old <- elbo.new
     elbo <- c(elbo, elbo.new)
-    if (diff <= epsilon & count >= min.iter) {
+    if (diff <= epsilon && count >= min.iter) {
       break
     }
     if (count == max.iter) {

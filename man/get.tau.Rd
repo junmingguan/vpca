@@ -2,7 +2,7 @@
 % Please edit documentation in R/vpca.R
 \name{get.tau}
 \alias{get.tau}
-\title{Title Update \eqn{Q(\tau)}.}
+\title{Update \eqn{Q(\tau)}.}
 \usage{
 get.tau(t, m.x, Sigma.x, m.W, Sigma.W, m.mu, Sigma.mu, a.tau, b.tau)
 }
@@ -29,5 +29,5 @@ get.tau(t, m.x, Sigma.x, m.W, Sigma.W, m.mu, Sigma.mu, a.tau, b.tau)
 \eqn{\tilde{a}_\tau} and \eqn{\tilde{b}_\tau}.
 }
 \description{
-Title Update \eqn{Q(\tau)}.
+Update \eqn{Q(\tau)}.
 }

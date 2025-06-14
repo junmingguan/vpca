@@ -1,0 +1,209 @@
+---
+title: "Missing Value Imputation"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(ggplot2)
+plot_res = function(output,title = "data",legend_position = "none", x_label, myColors){
+  rmse = as.vector(output)
+  N = dim(output)[1]
+  methods = rep(x_label, each = N)
+  df = data.frame(RMSE = rmse, Method = methods )
+  p<-ggplot(df, aes(x=Method, y=RMSE, color=Method)) +
+    geom_boxplot()+
+    # geom_violin()+
+    ggtitle(title) +  theme_bw()+  scale_color_manual(values=myColors)+
+    theme(legend.position= legend_position, legend.text=element_text(size=15),
+          plot.title = element_text(size = 15, face = "bold"),
+          axis.text.y = element_text(size =12.6),
+          axis.text.x = element_text(size =12.6,angle = 45, hjust = 1))
+  p
+}
+```
+
+```{r}
+fill_color = c("red","yellow3", "tan1","springgreen3", "springgreen","deepskyblue3","deepskyblue")
+
+##############  MovieLens data
+
+ml_res = readRDS("../data/results/MovieLens_boxplot.rds")
+ml_si_res = readRDS("../data/results/MovieLens_boxplot_si.rds")
+res <- cbind(ml_res, ml_si_res[,1])
+x_label= c("flash","SI.cv", "SI")
+plotM = plot_res(res,"MovieLens",x_label = x_label,myColors = fill_color)
+
+############ Breast Cancer data
+
+bc_res = readRDS("../data/results/BreastCancer_boxplot.rds")
+bc_si_res = readRDS("../data/results/BreastCancer_boxplot_si.rds")
+res <- cbind(bc_res, bc_si_res[,1])
+x_label= c("flash","SI.cv", "SI")
+plotB = plot_res(res,"Breast cancer",x_label = x_label,myColors = fill_color)
+
+############ GTEx data
+
+
+gz_res = readRDS("../data/results/GTExZscore_boxplot.rds")
+gz_si_res = readRDS("../data/results/GTExZscore_boxplot_si.rds")
+res <- cbind(gz_res, gz_si_res[,1])
+x_label= c("flash","SI.cv", "SI")
+plotG = plot_res(res,"GTEx",x_label = x_label,myColors = fill_color)
+
+############ Text data
+
+# pt_res = readRDS("../data/results/DenoiseRtext_boxplot.rds")
+# pt_si_res = readRDS("../data/results/DenoiseRtext_boxplot_si.rds")
+# res <- cbind(pt_res, pt_si_res[,1])
+res = readRDS("../data/results/DenoiseRtext_boxplot_with_si.rds")
+x_label= c("flash","SI.cv", "SI")
+plotP = plot_res(res,"Presidential address",x_label = x_label,myColors = fill_color)
+
+############ Tumor data
+
+dt_res = readRDS("../data/results/DenoiseRtumor_boxplot.rds")
+dt_si_res = readRDS("../data/results/DenoiseRtumor_boxplot_si.rds")
+res <- cbind(dt_res, dt_si_res[,1])
+x_label= c("flash","SI.cv", "SI")
+plotT = plot_res(res,"Brain Tumor",x_label = x_label,myColors = fill_color)
+```
+
+```{r}
+gridExtra::grid.arrange(plotM,plotT,plotG,plotB,plotP, layout_matrix = rbind(c(1,2,3),c(4,5,NA) ))
+```
+
+```{r}
+source("../code/wrapper.R")
+library(methods)
+library(R.matlab)
+library(Matrix)
+```
+
+```{r}
+
+ml100K_data = readRDS("../data/missingdata/MovieLens/scale_data.rds")
+MLMatrix <- sparseMatrix(i = ml100K_data[,1],
+                         j = ml100K_data[,2],
+                         x = ml100K_data[,3],dims = c(943,1682))
+# turn this sparse matrix into matrix in r
+Y = as.matrix(MLMatrix)
+Y[which(Y == 0)] = NA
+
+```
+
+```{r}
+start <- proc.time()
+soft.cv.res = try(softImpute.wrapper(Y,ngrids = 10,K = 40,fold = 10))
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+flash.res <- flashier::flash(Y, greedy_Kmax = 40, ebnm_fn = ebnm::ebnm_normal, backfit = TRUE)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+soft.res = softImpute(Y,rank.max = 40, lambda = 50)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+## President address
+
+### flash 6 factors
+
+```{r}
+Y_centered = readMat("../data/missingdata/DenoiseRText/example.mat")
+Y = Y_centered$Yscaled
+```
+
+```{r}
+start <- proc.time()
+soft.cv.res.text = try(softImpute.wrapper(Y,ngrids = 10,K = 40,fold = 10))
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+flash.res.text <- flashier::flash(Y, greedy_Kmax = 40, ebnm_fn = ebnm::ebnm_normal, backfit = TRUE)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+soft.res.text = softImpute(Y,rank.max = 40)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+gsoft = softImpute::softImpute(Y_data, rank.max = Kmax)
+Y_hat =  gsoft$u %*% diag(gsoft$d) %*% t(gsoft$v)
+```
+
+## GTEx
+
+### flash 21 factors, softimpute with 40 factoes
+
+### softimpute 500.441 seconds flash 16 seonds
+
+```{r}
+Y_centered = readMat("../data/missingdata/GTExZscore/example.mat")
+Y = Y_centered$Ycentered
+```
+
+```{r}
+start <- proc.time()
+soft.cv.res.GTEx = try(softImpute.wrapper(Y,ngrids = 10,K = 40,fold = 10))
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+flash.res.GTEx <- flashier::flash(Y, greedy_Kmax = 40, ebnm_fn = ebnm::ebnm_normal, backfit = TRUE)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+## Tumor
+
+### softimpute 21 factors 14 seconds
+
+### flash 1 second 11 factors
+
+```{r}
+Y_centered = readMat("../data/missingdata/DenoiseRtumor/example.mat")
+Y = Y_centered$Ycentered
+```
+
+```{r}
+start <- proc.time()
+soft.cv.res.tumor = try(softImpute.wrapper(Y,ngrids = 10,K = 40,fold = 10))
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```
+
+```{r}
+start <- proc.time()
+flash.res.tumor <- flashier::flash(Y, greedy_Kmax = 40, ebnm_fn = ebnm::ebnm_normal, backfit = TRUE)
+end <- proc.time()
+elapsed <- end - start
+print(elapsed)
+```

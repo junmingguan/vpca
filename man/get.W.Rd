@@ -2,7 +2,7 @@
 % Please edit documentation in R/vpca.R
 \name{get.W}
 \alias{get.W}
-\title{Title Update \eqn{\mathbf{W}}.}
+\title{Update \eqn{\mathbf{W}}.}
 \usage{
 get.W(t, m.x, Sigma.x, m.mu, m.tau, m.alpha)
 }
@@ -23,5 +23,9 @@ get.W(t, m.x, Sigma.x, m.mu, m.tau, m.alpha)
 \eqn{\mathbb{E}[\mathbf{W}]} and \eqn{\Sigma_{\mathbf{W}}}.
 }
 \description{
-Title Update \eqn{\mathbf{W}}.
+Update \eqn{\mathbf{W}}.
 }
+\section{TODO}{
+ can inversion be avoided?
+}
+

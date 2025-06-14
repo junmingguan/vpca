@@ -1,0 +1,1416 @@
+---
+title: "noise_estimation"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(ebnm)
+library(flashier)
+library(devtools)
+library(vpca)
+```
+
+```{r}
+library(ggplot2)
+fill_color = c("red","yellow3", "tan1","springgreen3", "springgreen","deepskyblue3","deepskyblue", "darkgrey", "purple", "cyan")
+plot_res = function(output,title = "data", true_noise=1, legend_position = "none", x_label, myColors, plot_true_noise=TRUE){
+  sigmaSq = as.vector(output)
+  N = dim(output)[1]
+  methods = rep(x_label, each = N)
+  df = data.frame(sigmaSq = sigmaSq, Method = methods )
+  p<-ggplot(df, aes(x=Method, y=sigmaSq, color=Method)) +
+    geom_boxplot()+
+     labs(
+    x = "Method",
+    y = expression(paste(hat(sigma)^2))
+    # title = expression(paste("Convergence to ", sqrt(lambda[DET]), " in Large System Limit"))
+  ) +
+    # geom_violin()+
+    # ggtitle(title) + 
+    scale_color_manual(values=myColors)+
+    theme_minimal() +
+     theme(legend.position="none", # remve legend
+           text = element_text(size = 15),
+    panel.grid = element_blank(),              # Remove grid
+    panel.border = element_blank(),            # Remove full border
+    axis.line = element_line(color = "black"), # Add left and bottom axes
+    axis.line.y.right = element_blank(),
+    axis.line.x.top = element_blank()
+  )
+    # theme(legend.position= legend_position, legend.text=element_text(size=15),
+    #       plot.title = element_text(size = 15, face = "bold"),
+    #       axis.text.y = element_text(size =12.6),
+    #       axis.text.x = element_text(size =12.6,angle = 45, hjust = 1))
+  if (plot_true_noise) {
+    p=p+geom_hline(yintercept = true_noise, linetype = "dashed", color = "red")
+  }
+  p
+}
+
+library(pheatmap)
+plot_heatmap <- function(L, title = "", colors_range = c('blue','gray96', 'red'), brks = NULL){
+  ### define the color map
+  cols <- colorRampPalette(colors_range)(49)
+  if (is.null(brks) == TRUE){
+    # brks <- seq(min(L), max(L), length=50)
+    brks <- seq(-max(abs(L)), max(abs(L)), length=50)
+  }
+  
+  plt <- pheatmap(L, show_rownames = FALSE, show_colnames = FALSE, cluster_rows = FALSE, cluster_cols = FALSE, color = cols, breaks = brks, main = title)
+  return(plt)
+}
+
+rrmse <- function(B_hat, B_true) {
+  numerator <- sum((B_hat - B_true)^2)
+  denominator <- sum(B_true^2)
+  sqrt(numerator / denominator)
+}
+
+update_flash_res <- function(sim, flash_sigma2, flash_rrmse, ebnm_fn, k, greedy=F, fix_tau=F, true_sigma2=1, from_truth=F) {
+  if (fix_tau) {
+  S <- true_sigma2
+  var_type = NULL
+} else {
+  S <- NULL
+  var_type = 0
+}
+  if (greedy) {
+    flash_obj <- flash(sim$Y, S=S, ebnm_fn = ebnm_fn, verbose = 0, backfit = F, greedy_Kmax = k, var_type = var_type)
+    print(flash_obj$n_factors)
+  } else if (from_truth) {
+    flash_obj <- flash_init(sim$Y, S=S, var_type = var_type) |>
+      flash_set_verbose(verbose = 0) |>
+      flash_factors_init(list(u=sim$L, v=sim$F, d=rep(1, dim(sim$L)[2])), ebnm_fn = ebnm_fn) |>
+      flash_backfit(verbose = 0)
+  }
+  else {
+     flash_obj <- flash_init(sim$Y, S=S, var_type = var_type) |>
+      flash_set_verbose(verbose = 0) |>
+      flash_factors_init(svd(sim$Y, nu = k, nv = k), ebnm_fn = ebnm_fn) |>
+      flash_backfit(verbose = 0)
+  }
+   
+  flash_sigma2 = c(flash_sigma2, flash_obj$residuals_sd^2)
+  flash_rrmse = c(flash_rrmse,rrmse(flash_obj$L_pm %*% t(flash_obj$F_pm), sim$LFt))
+  return(list(flash_sigma2, flash_rrmse, flash_obj))
+}
+
+
+update_global_res <- function(sim, res, svd_Y, global_sigma2, global_rrmse, true_sigma2=1) {
+   
+  global_sigma2 = c(global_sigma2, res$sigma2)
+  global_rrmse = c(global_rrmse,rrmse(svd_Y$u %*% diag(res$gamma_evb) %*% t(svd_Y$v), sim$LFt))
+  return(list(global_sigma2, global_rrmse, res))
+}
+
+ebnm_exponential <- function(x, s) {
+  flash_ebnm('exponential')
+}
+
+ebnm_laplace <- function(x, s) {
+  flash_ebnm("laplace")
+}
+```
+
+## four population
+
+```{r}
+four_pop_tree_sim = function(n_per_pop, p, sigma_e, seed, sigma_b=rep(1, 6)){
+
+  if(length(sigma_b) != 6){
+    stop("There can only be 6 branch lengths i.e. factors")
+  }
+
+  # number of individuals
+  n <- n_per_pop * 4
+
+  # loadings matrix which specifies the topology
+  L <- matrix(0, nrow=4*n_per_pop, ncol=6)
+  L[1:n_per_pop, 2] <- 1
+  L[1:n_per_pop, 6] <- 1
+  L[(n_per_pop + 1):(2*n_per_pop), 2] <- 1
+  L[(n_per_pop + 1):(2*n_per_pop), 5] <- 1
+  L[(2*n_per_pop + 1):(3*n_per_pop), 1] <- 1
+  L[(2*n_per_pop + 1):(3*n_per_pop), 3] <- 1
+  L[(3*n_per_pop + 1):(4*n_per_pop), 1] <- 1
+  L[(3*n_per_pop + 1):(4*n_per_pop), 4] <- 1
+
+  # drift on each branch
+  F <- matrix(NA, nrow=p, ncol=6)
+  for(k in 1:6){
+    F[ ,k] <- rnorm(p, 0, sigma_b[k])
+  }
+
+  # errors
+  set.seed(seed)
+  E <- matrix(rnorm(n*p, 0, sigma_e), nrow=n, ncol=p)
+
+  # data
+  LFt = L %*% t(F)
+  Y <- LFt + E
+
+  # simulation object
+  res <- list(Y=Y, LFt = LFt, L=L, F=F)
+  return(res)
+
+}
+```
+
+```{r}
+document()
+load_all()
+library(vpca)
+library(flashier)
+sigma_e <- 1.
+
+
+n_per_pop <- 20 #50
+pops <- c(rep("Pop1", n_per_pop), rep("Pop2", n_per_pop))
+sigma_e <- 1.0
+# sigma_b <- c(1.0, 1.0, 1.0)
+p = 100 #50
+
+
+flash_pe_sigma2 <- c()
+flash_gb_pn_sigma2 <- c()
+flash_pe_pn_sigma2 <- c()
+flash_pe_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_gb_pn_rrmse <- c()
+flash_pe_pn_rrmse <- c()
+flash_pe_pl_rrmse <- c()
+flash_n_rrmse <- c()
+vpca_rrmse <- c()
+k=10
+q=10
+for (i in 1:20) {
+  print(i)
+  sim_res_fp <- four_pop_tree_sim(n_per_pop, p, sigma_e, seed=i)
+  
+  # flash_obj_pe_pn <- flash(sim_res_fp$Y,
+  #                    ebnm_fn = c(ebnm_point_exponential, ebnm_point_normal),
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  # flash_pe_pn_sigma2 = c(flash_pe_pn_sigma2, flash_obj_pe_pn$residuals_sd^2)
+  res <- update_flash_res(sim_res_fp, flash_pe_pn_sigma2, flash_pe_pn_rrmse, c(ebnm_point_exponential, ebnm_point_normal), k)
+  flash_pe_pn_sigma2 = res[[1]]
+  flash_pe_pn_rrmse = res[[2]]
+  
+  
+  # flash_obj_pe_pl <- flash(sim_res_fp$Y,
+  #                    ebnm_fn = c(ebnm_point_exponential, ebnm_point_laplace),
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  # flash_pe_pl_sigma2 = c(flash_pe_pl_sigma2, flash_obj_pe_pl$residuals_sd^2)
+  res <- update_flash_res(sim_res_fp, flash_pe_pl_sigma2, flash_pe_pl_rrmse, c(ebnm_point_exponential, ebnm_point_laplace), k)
+  flash_pe_pl_sigma2 = res[[1]]
+  flash_pe_pl_rrmse = res[[2]]
+  
+  # flash_obj_gb_pn <- flash(sim_res_fp$Y,
+  #                    ebnm_fn = c(ebnm_generalized_binary, ebnm_point_normal),
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  # flash_gb_pn_sigma2 = c(flash_gb_pn_sigma2, flash_obj_gb_pn$residuals_sd^2)
+  res <- update_flash_res(sim_res_fp, flash_gb_pn_sigma2, flash_gb_pn_rrmse, c(ebnm_generalized_binary, ebnm_point_normal), k)
+  flash_gb_pn_sigma2 = res[[1]]
+  flash_gb_pn_rrmse = res[[2]]
+  
+  # flash_obj_n <- flash(sim_res_fp$Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  # flash_n_sigma2 = c(flash_n_sigma2, flash_obj_n$residuals_sd^2)
+  res <- update_flash_res(sim_res_fp, flash_n_sigma2, flash_n_rrmse, ebnm_normal, k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  
+  res_vpca <- init_svd(Matrix(sim_res_fp$Y), q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=0.00001)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_res_fp$LFt))
+}
+
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pe_pn_sigma2, flash_pe_pl_sigma2, flash_gb_pn_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pe_pn', 'flash_pe_pl', 'flash_gb_pn'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pe_pn_rrmse, flash_pe_pl_rrmse, flash_gb_pn_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pe_pn', 'flash_pe_pl', 'flash_gb_pn'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(vpca_rrmse, flash_n_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal'), myColors = fill_color, plot_true_noise = F)
+```
+
+## Bishop example
+
+```{r}
+generate_Y <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0) {
+  set.seed(seed)
+  Y <- matrix(data = 0, nrow = d, ncol = n)
+  # alpha <- c(5, 4, 3, 2, 1, 1, 1, 1, 1, 1)
+  alpha <- rep(1, d)
+  alpha[1:q] <- q:1
+  # alpha[1:min(20, floor(d/4))] <- min(20, floor(d/4)):1
+  for (i in 1:d) {
+    # Y[i, ] <- sample(1:5, n, replace = T) 
+    Y[i, ] <- rnorm(n, 0, alpha[i])
+    if (sparsity > 0) {
+      zero_indices <- sort(sample(n, floor(sparsity * n)))
+
+      Y[i, zero_indices] <- 0
+    }
+  }
+  # Y = Y + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(Y)
+}
+```
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+sigma_e <- 1.
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_pe_sigma2 <- c()
+vpca_sigma2 <- c()
+set.seed(234)
+for (i in 1:20) {
+  Y <- generate_Y(sigma_e = sigma_e, seed=200+i)
+  print(paste(i, sum(Y)))
+  flash_obj_pn <- flash(Y,
+                     ebnm_fn = ebnm_point_normal,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pn_sigma2 = c(flash_pn_sigma2, flash_obj_pn$residuals_sd^2)
+  flash_obj_pl <- flash(Y,
+                     ebnm_fn = ebnm_point_laplace,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pl_sigma2 = c(flash_pl_sigma2, flash_obj_pl$residuals_sd^2)
+  flash_obj_pe <- flash(Y,
+                     ebnm_fn = ebnm_point_exponential,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pe_sigma2 = c(flash_pe_sigma2, flash_obj_pe$residuals_sd^2)
+  flash_obj_n <- flash(Y,
+                     ebnm_fn = ebnm_normal,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_n_sigma2 = c(flash_n_sigma2, flash_obj_n$residuals_sd^2)
+  res_vpca <- init_svd(Y, q = 6, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=flash_obj_n$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal'), myColors = fill_color)
+plot_res(cbind(flash_pl_sigma2), title='sigma^2', x_label=c('flash_pt_laplace'), myColors = fill_color)
+```
+
+## Bishop example with laplace noise
+
+```{r}
+library(LaplacesDemon)
+generate_Y_lp_noise <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0) {
+  set.seed(seed)
+  Y <- matrix(data = 0, nrow = d, ncol = n)
+  # alpha <- c(5, 4, 3, 2, 1, 1, 1, 1, 1, 1)
+  alpha <- rep(1, d)
+  alpha[1:q] <- q:1
+  # alpha[1:min(20, floor(d/4))] <- min(20, floor(d/4)):1
+  for (i in 1:d) {
+    # Y[i, ] <- sample(1:5, n, replace = T) 
+    Y[i, ] <- rlaplace(n, 0, alpha[i])
+    if (sparsity > 0) {
+      zero_indices <- sort(sample(n, floor(sparsity * n)))
+
+      Y[i, zero_indices] <- 0
+    }
+  }
+  # Y = Y + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(Y)
+}
+```
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+sigma_e <- 1.
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_pe_sigma2 <- c()
+vpca_sigma2 <- c()
+set.seed(234)
+for (i in 1:20) {
+  Y <- generate_Y_lp_noise(sigma_e = sigma_e, seed=200+i)
+  print(paste(i, sum(Y)))
+  flash_obj_pn <- flash(Y,
+                     ebnm_fn = ebnm_point_normal,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pn_sigma2 = c(flash_pn_sigma2, flash_obj_pn$residuals_sd^2)
+  flash_obj_pl <- flash(Y,
+                     ebnm_fn = ebnm_point_laplace,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pl_sigma2 = c(flash_pl_sigma2, flash_obj_pl$residuals_sd^2)
+  flash_obj_pe <- flash(Y,
+                     ebnm_fn = ebnm_point_exponential,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_pe_sigma2 = c(flash_pe_sigma2, flash_obj_pe$residuals_sd^2)
+  flash_obj_n <- flash(Y,
+                     ebnm_fn = ebnm_normal,
+                     greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  flash_n_sigma2 = c(flash_n_sigma2, flash_obj_n$residuals_sd^2)
+  res_vpca <- init_svd(Y, q = 6, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=flash_obj_n$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal'), myColors = fill_color)
+plot_res(cbind(flash_pl_sigma2), title='sigma^2', x_label=c('flash_pt_laplace'), myColors = fill_color)
+```
+
+## point normal
+
+```{r}
+generate_Y_pn <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0.5) {
+  set.seed(seed)
+  L <- matrix(rnorm(d*q), nrow=d, ncol=q)
+  F <- matrix(rnorm(n*q), nrow=n, ncol=q)
+  if (sparsity > 0) {
+  L_mask <- matrix(rbinom(length(L), size = 1, prob = 1-sparsity), nrow = nrow(L), ncol = ncol(L))
+  F_mask <- matrix(rbinom(length(F), size = 1, prob = 1-sparsity), nrow = nrow(F), ncol = ncol(F))
+  L = L * L_mask
+  F = F * F_mask
+  }
+  LFt = L %*% t(F)
+  Y = LFt + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(list(Y=Y, LFt=LFt, L=L, F=F))
+}
+```
+
+### sparsity = 0
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+# g_init_exp = gammamix(pi=c(0, 1), shape=c(1, 1), scale=c(0, 1), shift = rep(0, length(pi)))
+# 
+# # Fit the EBNM model using ebnm_point_exponential
+# res <- ebnm_point_exponential(x, s,
+#   g_init = g_init,
+#   fix_g = TRUE  # Do not let ebnm change the prior
+# )
+# source('../code/evbmf.R')
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+global_sigma2 <- c()
+global_rrmse <- c()
+
+local_sigma2 <- c()
+local_rrmse <- c()
+
+for (i in 1:20) {
+  print(i)
+  q = 10
+  k = 10
+  sim_pn <- generate_Y_pn(sigma_e = sigma_e, seed = 100+i, sparsity = 0)
+  svd_Y = svd(sim_pn$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  
+  res <- update_global_res(sim_pn, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+  
+  res_local = evb_ite_pca(svd_Y, L=50, M=100, local = TRUE)
+  res <- update_global_res(sim_pn, res_local, svd_Y, local_sigma2, local_rrmse)
+  local_sigma2 = res[[1]]
+  local_rrmse = res[[2]]
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pn, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pn, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace, k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  
+  # res <- update_flash_res(sim_pe, flash_pl_sigma2, flash_pl_rrmse, flash_ebnm('laplace', mode='estimate'), k)
+  # flash_l_sigma2 = res[[1]]
+  # flash_l_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pn, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential, k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_pn, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_pn, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_pn, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_pn, flash_n_sigma2, flash_n_rrmse, ebnm_normal, k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  res_vpca <- init_svd(sim_pn$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pn$LFt))
+  
+  # res_vpca_q6 <- init_svd(sim_pe$Y, q = 6, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  # res_vpca_q6 <- vpcar(res_vpca_q6, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  # vpca_sigma2_q6 = c(vpca_sigma2_q6, 1/res_vpca$E_tau)
+  # vpca_rrmse_q6 = c(vpca_rrmse_q6, rrmse(res_vpca_q6$E_W %*% res_vpca_q6$E_X, sim_pe$LFt))
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, global_sigma2, local_sigma2, flash_n_sigma2, flash_pl_sigma2), title='sigma^2', x_label=c('VBPCA', 'EVB global', 'EVB local', 'flash Normal', 'flash Laplace'), myColors = fill_color)
+```
+
+## point exponetial
+
+```{r}
+generate_Y_pe <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0.5) {
+  set.seed(seed)
+  L <- matrix(rexp(d*q, 1), nrow=d, ncol=q)
+  F <- matrix(rexp(n*q, 1), nrow=n, ncol=q)
+  if (sparsity > 0) {
+  L_mask <- matrix(rbinom(length(L), size = 1, prob = 1-sparsity), nrow = nrow(L), ncol = ncol(L))
+  F_mask <- matrix(rbinom(length(F), size = 1, prob = 1-sparsity), nrow = nrow(F), ncol = ncol(F))
+  L = L * L_mask
+  F = F * F_mask
+  }
+  LFt = L %*% t(F)
+  Y = LFt + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(list(Y=Y, LFt=LFt, L=L, F=F))
+}
+```
+
+### sparsity = 0
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+# g_init_exp = gammamix(pi=c(0, 1), shape=c(1, 1), scale=c(0, 1), shift = rep(0, length(pi)))
+# 
+# # Fit the EBNM model using ebnm_point_exponential
+# res <- ebnm_point_exponential(x, s,
+#   g_init = g_init,
+#   fix_g = TRUE  # Do not let ebnm change the prior
+# )
+# source('../code/evbmf.R')
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+global_sigma2 <- c()
+global_rrmse <- c()
+
+local_sigma2 <- c()
+local_rrmse <- c()
+
+
+
+for (i in 1:20) {
+  print(i)
+  q = 10
+  k = 10
+  sim_pe <- generate_Y_pe(sigma_e = sigma_e, seed = 200+i, sparsity = 0)
+  svd_Y = svd(sim_pe$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  res <- update_global_res(sim_pe, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+  
+  
+  res_local = evb_ite_pca(svd_Y, L=50, M=100, local = TRUE)
+  res <- update_global_res(sim_pe, res_local, svd_Y, local_sigma2, local_rrmse)
+  local_sigma2 = res[[1]]
+  local_rrmse = res[[2]]
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace, k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  
+  # res <- update_flash_res(sim_pe, flash_pl_sigma2, flash_pl_rrmse, flash_ebnm('laplace', mode='estimate'), k)
+  # flash_l_sigma2 = res[[1]]
+  # flash_l_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential, k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_pe, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_pe, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_pe, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_pe, flash_n_sigma2, flash_n_rrmse, ebnm_normal, k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  res_vpca <- init_svd(sim_pe$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pe$LFt))
+  
+  # res_vpca_q6 <- init_svd(sim_pe$Y, q = 6, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  # res_vpca_q6 <- vpcar(res_vpca_q6, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  # vpca_sigma2_q6 = c(vpca_sigma2_q6, 1/res_vpca$E_tau)
+  # vpca_rrmse_q6 = c(vpca_rrmse_q6, rrmse(res_vpca_q6$E_W %*% res_vpca_q6$E_X, sim_pe$LFt))
+}
+```
+
+```{r}
+
+plot_res(cbind(global_sigma2,local_sigma2, vpca_sigma2, flash_n_sigma2,  flash_pe_sigma2, flash_pl_sigma2), title='sigma^2', x_label=c('EVB global', 'EVB local', 'VBPCA', 'flash Norm.',  'flash Exp.', 'flash Lapl.'), myColors = fill_color)
+
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2,flash_pe_fixtau_sigma2, flash_pe_greedy_sigma2, flash_pe_greedy_fixtau_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color)
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2,flash_pe_fixtau_sigma2, flash_pe_greedy_sigma2, flash_pe_greedy_fixtau_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color)
+
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2,flash_pe_fixtau_sigma2, flash_pe_greedy_fixtau_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+```
+
+### sparsity = 0.5
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+# g_init_exp = gammamix(pi=c(0, 1), shape=c(1, 1), scale=c(0, 1), shift = rep(0, length(pi)))
+# 
+# # Fit the EBNM model using ebnm_point_exponential
+# res <- ebnm_point_exponential(x, s,
+#   g_init = g_init,
+#   fix_g = TRUE  # Do not let ebnm change the prior
+# )
+
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+global_sigma2 <- c()
+global_rrmse <- c()
+
+for (i in 1:30) {
+  print(i)
+  q = 6
+  k = 10
+  sim_pe <- generate_Y_pe(sigma_e = sigma_e, seed = i, sparsity = 0.5)
+  
+  svd_Y = svd(sim_pe$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  res <- update_global_res(sim_pe, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace, k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  
+  # res <- update_flash_res(sim_pe, flash_pl_sigma2, flash_pl_rrmse, flash_ebnm('laplace', mode='estimate'), k)
+  # flash_l_sigma2 = res[[1]]
+  # flash_l_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential, k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_pe, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_pe, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_pe, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  
+  # res <- update_flash_res(sim_pe, flash_pe_sigma2, flash_pe_rrmse, flash_ebnm('point_exponential', mode='estimate'), k)
+  # flash_e_sigma2 = res[[1]]
+  # flash_e_rrmse = res[[2]]
+  
+  # flash_obj_n <- flash(Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pe, flash_n_sigma2, flash_n_rrmse, ebnm_normal, k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  res_vpca <- init_svd(sim_pe$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pe$LFt))
+  
+  # res_vpca_q6 <- init_svd(sim_pe$Y, q = 6, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  # res_vpca_q6 <- vpcar(res_vpca_q6, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  # vpca_sigma2_q6 = c(vpca_sigma2_q6, 1/res_vpca$E_tau)
+  # vpca_rrmse_q6 = c(vpca_rrmse_q6, rrmse(res_vpca_q6$E_W %*% res_vpca_q6$E_X, sim_pe$LFt))
+}
+```
+
+```{r}
+
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2, flash_pe_greedy_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_greedy'), myColors = fill_color)
+
+
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind( vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c( 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind( vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c( 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+```
+
+#### single run
+
+check LF\^t true LFt is very sparse based on our setup try ebnm_exponetial, is it because the sparsity
+
+```{r}
+
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_e_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_l_sigma2 <- c()
+flash_n_sigma2 <- c()
+vpca_sigma2 <- c()
+vpca_sigma2_q6 <- c()
+
+flash_pe_rrmse <- c()
+flash_e_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_l_rrmse <- c()
+flash_n_rrmse <- c()
+vpca_rrmse <- c()
+ q = 6
+  k = 10
+  sim_pe <- generate_Y_pe(sigma_e = sigma_e, seed = 300+i,sparsity = 0)
+  
+   svd_Y = svd(sim_pe$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  res <- update_global_res(sim_pe, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+
+  # res <- update_flash_res(sim_b, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  # flash_pn_sigma2 = res[[1]]
+  # flash_pn_rrmse = res[[2]]
+  # res <- update_flash_res(sim_b, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace,k)
+  # flash_pl_sigma2 = res[[1]]
+  # flash_pl_rrmse = res[[2]]
+  res <- update_flash_res(sim_pe, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k, from_truth = T)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  flash_pe_obj = res[[3]]
+
+  res <- update_flash_res(sim_pe, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k, from_truth = F)
+  flash_pe_f_sigma2 = res[[1]]
+  flash_pe_f_rrmse = res[[2]]
+  flash_pe_f_obj = res[[3]]
+
+
+  res <- update_flash_res(sim_pe, flash_n_sigma2, flash_n_rrmse, ebnm_normal,k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  flash_n_obj = res[[3]]
+  
+  
+  res_vpca <- init_svd(sim_pe$Y, q = 10, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pe$LFt))
+```
+
+```{r}
+svd_Y$d
+res_global$gamma_evb
+
+
+get_UDVt <-function(U, V) {
+  U_norms <- sqrt(colSums(U^2)) 
+  V_norms <- sqrt(colSums(V^2))
+
+  D <- U_norms * V_norms
+  U <- sweep(U, 2, U_norms, FUN = "/")
+  V <- sweep(V, 2, V_norms, FUN = "/")
+  return(list(U=U, D=D, V=V))
+}
+
+res_scaled <- get_UDVt(res_vpca$E_W, t(res_vpca$E_X))
+
+res_scaled$D
+1/res_vpca$E_tau
+
+
+print("flash pe from true LFt")
+res_scaled <- get_UDVt(flash_pe_obj$L_pm, flash_pe_obj$F_pm)
+
+res_scaled$D
+
+print("flash pe from svd")
+res_scaled <- get_UDVt(flash_pe_f_obj$L_pm, flash_pe_f_obj$F_pm)
+
+res_scaled$D
+
+
+res_scaled <- get_UDVt(flash_n_obj$L_pm, flash_n_obj$F_pm)
+print("flash normal")
+res_scaled$D
+
+```
+
+```{r}
+
+```
+
+```{r}
+plot_heatmap(flash_pe_obj$L_pm)
+plot_heatmap(flash_n_obj$L_pm)
+plot_heatmap(res_vpca$E_W)
+```
+
+## point laplace
+
+```{r}
+library(LaplacesDemon)
+generate_Y_pl <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0.5) {
+  set.seed(seed)
+  L <- matrix(rlaplace(d*q, 0, 1), nrow=d, ncol=q)
+  F <- matrix(rlaplace(n*q, 0, 1), nrow=n, ncol=q)
+  if (sparsity > 0) {
+  L_mask <- matrix(rbinom(length(L), size = 1, prob = 1-sparsity), nrow = nrow(L), ncol = ncol(L))
+  F_mask <- matrix(rbinom(length(F), size = 1, prob = 1-sparsity), nrow = nrow(F), ncol = ncol(F))
+  L = L * L_mask
+  F = F * F_mask
+  }
+  LFt = L %*% t(F)
+  Y = LFt + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+
+
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(list(Y=Y, LFt=LFt))
+}
+```
+
+### sparsity = 0
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+
+
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+global_sigma2 <- c()
+global_rrmse <- c()
+
+local_sigma2 <- c()
+local_rrmse <- c()
+
+
+
+for (i in 1:20) {
+  print(i)
+  q = 10 # 6
+  k = 10
+  sim_pl <- generate_Y_pl(sigma_e = sigma_e, seed = 200+i, sparsity = 0)
+  
+  
+  svd_Y = svd(sim_pl$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  res <- update_global_res(sim_pl, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+  
+  res_local = evb_ite_pca(svd_Y, L=50, M=100, local = TRUE)
+  res <- update_global_res(sim_pl, res_local, svd_Y, local_sigma2, local_rrmse)
+  local_sigma2 = res[[1]]
+  local_rrmse = res[[2]]
+  
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace, k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  # flash_obj_n <- flash(Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_n_sigma2, flash_n_rrmse, ebnm_normal,k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  res_vpca <- init_svd(sim_pl$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pl$LFt))
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2, flash_pe_greedy_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_greedy'), myColors = fill_color)
+
+plot_res(cbind(vpca_sigma2, global_sigma2, local_sigma2, flash_n_sigma2, flash_pl_sigma2), title='sigma^2', x_label=c('VBPCA', 'EVB global', 'EVB local',  'flash Normal', 'flash Laplace'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+```
+
+### sparsity = 0.5
+
+```{r}
+document()
+load_all()
+library(vpca)
+
+
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+for (i in 1:20) {
+  print(i)
+  q = 10 # 6
+  k = 10
+  sim_pl <- generate_Y_pl(sigma_e = sigma_e, seed = 200+i, sparsity = 0.5)
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace, k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_pl, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  # flash_obj_n <- flash(Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_pl, flash_n_sigma2, flash_n_rrmse, ebnm_normal,k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  res_vpca <- init_svd(sim_pl$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_pl$LFt))
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2, flash_pe_greedy_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_greedy'), myColors = fill_color)
+
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+```
+
+## binary
+
+```{r}
+generate_Y_binary <- function(sigma_e = 1, d=50, n=100, q=5, seed = 1, sparsity = 0.5) {
+  set.seed(seed)
+  L <- matrix(rbinom(d*q, 1, 1-sparsity), nrow=d, ncol=q)
+  F <- matrix(rbinom(n*q, 1, 1-sparsity), nrow=n, ncol=q)
+  # L_mask <- matrix(rbinom(length(L), size = 1, prob = 0.3), nrow = nrow(L), ncol = ncol(L))
+  # F_mask <- matrix(rbinom(length(F), size = 1, prob = 0.3), nrow = nrow(F), ncol = ncol(F))
+  # L = L * L_mask
+  # F = F * F_mask
+  # print(L %*% t(F))
+  LFt = L %*% t(F)
+  Y = L %*% t(F) + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+  
+
+  library(Matrix)
+  Y <- Matrix(Y) #, sparse = TRUE)
+  return(list(Y=Y, LFt=LFt, L=L, F=F))
+}
+```
+
+```{r}
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+global_sigma2 <- c()
+global_rrmse <- c()
+for (i in 1:30) {
+  print(i)
+  q = 6
+  k = 10
+  sim_b <- generate_Y_binary(sigma_e = sigma_e, seed = 300+i)
+  
+  svd_Y = svd(sim_b$Y, nu=50, nv=50)
+  res_global = evb_global_pca(svd_Y, L=50, M=100, H=10)
+  res <- update_global_res(sim_b, res_global, svd_Y, global_sigma2, global_rrmse)
+  global_sigma2 = res[[1]]
+  global_rrmse = res[[2]]
+  
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_b, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_b, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace,k)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_b, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k, from_truth = T)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_b, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  res <- update_flash_res(sim_b, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T, from_truth = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  res <- update_flash_res(sim_b, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  # flash_obj_n <- flash(Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_b, flash_n_sigma2, flash_n_rrmse, ebnm_normal,k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_b, flash_gb_sigma2, flash_gb_rrmse, ebnm_generalized_binary,k)
+  flash_gb_sigma2 = res[[1]]
+  flash_gb_rrmse = res[[2]]
+  
+  res_vpca <- init_svd(sim_b$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_b$LFt))
+}
+```
+
+```{r}
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_gb_sigma2, flash_pl_sigma2, flash_pe_sigma2, flash_pe_greedy_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal','flash_gb', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_greedy'), myColors = fill_color)
+plot_res(cbind(global_sigma2, vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal'), myColors = fill_color)
+plot_res(cbind(flash_pl_sigma2), title='sigma^2', x_label=c('flash_pt_laplace'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_gb_rrmse, flash_pl_rrmse, flash_pe_rrmse,flash_pe_fixtau_rrmse, flash_pe_greedy_rrmse, flash_pe_greedy_fixtau_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal', 'flash_pt_normal','flash_gb', 'flash_pt_laplace', 'flash_pt_exp', 'flash_pt_exp_fixtau', 'flash_pt_exp_greedy', 'flash_pt_exp_greedy_fixtau'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(global_rrmse, vpca_rrmse, flash_n_rrmse), title='rrmse', x_label=c('global', 'VPCA', 'flash_normal'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(flash_pl_rrmse), title='rrmse', x_label=c('flash_pt_laplace'), myColors = fill_color, plot_true_noise = F)
+```
+
+```{r}
+plot_heatmap(res_vpca$E_W)
+plot_heatmap(res[[3]]$L_pm)
+```
+
+flash normal with svd and backfit
+
+### single run
+
+```{r}
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pe_greedy_sigma2 <- c()
+flash_pe_fixtau_sigma2 <- c()
+flash_pe_greedy_fixtau_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pe_greedy_rrmse <- c()
+flash_pe_fixtau_rrmse <- c()
+flash_pe_greedy_fixtau_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+ q = 6
+  k = 10
+  sim_b <- generate_Y_binary(sigma_e = sigma_e, seed = 300+i)
+  # res <- update_flash_res(sim_b, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal, k)
+  # flash_pn_sigma2 = res[[1]]
+  # flash_pn_rrmse = res[[2]]
+  # res <- update_flash_res(sim_b, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace,k)
+  # flash_pl_sigma2 = res[[1]]
+  # flash_pl_rrmse = res[[2]]
+  res <- update_flash_res(sim_b, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential,k)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  flash_pe_obj = res[[3]]
+  res <- update_flash_res(sim_b, flash_pe_greedy_sigma2, flash_pe_greedy_rrmse, ebnm_point_exponential,k, greedy = T)
+  flash_pe_greedy_sigma2 = res[[1]]
+  flash_pe_greedy_rrmse = res[[2]]
+  flash_pe_greedy_obj = res[[3]]
+  res <- update_flash_res(sim_b, flash_pe_fixtau_sigma2, flash_pe_fixtau_rrmse, ebnm_point_exponential,k, fix_tau = T)
+  flash_pe_fixtau_sigma2 = res[[1]]
+  flash_pe_fixtau_rrmse = res[[2]]
+  flash_pe_greedy_obj = res[[3]]
+  res <- update_flash_res(sim_b, flash_pe_greedy_fixtau_sigma2, flash_pe_greedy_fixtau_rrmse, ebnm_point_exponential,k, greedy = T, fix_tau = T)
+  flash_pe_greedy_fixtau_sigma2 = res[[1]]
+  flash_pe_greedy_fixtau_rrmse = res[[2]]
+  flash_pe_greedy_fixtau_obj = res[[3]]
+
+  res <- update_flash_res(sim_b, flash_n_sigma2, flash_n_rrmse, ebnm_normal,k)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  flash_n_obj = res[[3]]
+  
+  res <- update_flash_res(sim_b, flash_gb_sigma2, flash_gb_rrmse, ebnm_generalized_binary,k)
+  flash_gb_sigma2 = res[[1]]
+  flash_gb_rrmse = res[[2]]
+  flash_gb_obj = res[[3]]
+  
+  res_vpca <- init_svd(sim_b$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=res[[3]]$flash_fit$conv.tol)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_b$LFt))
+```
+
+```{r}
+plot_heatmap(flash_pe_greedy_obj$L_pm)
+plot_heatmap(flash_pe_obj$L_pm)
+plot_heatmap(flash_n_obj$L_pm)
+plot_heatmap(flash_gb_obj$L_pm)
+plot_heatmap(res_vpca$E_W)
+```
+
+## count + normal noise
+
+```{r}
+generate_Y_count <- function(sigma_e = 1, d=50, n=100, seed = 1, sparsity = 0.5) {
+  set.seed(seed)
+  Y <- matrix(data = 0, nrow = d, ncol = n)
+  # alpha <- c(5, 4, 3, 2, 1, 1, 1, 1, 1, 1)
+  # alpha[1:min(20, floor(d/4))] <- min(20, floor(d/4)):1
+  for (i in 1:d) {
+    Y[i, ] <- sample(1:5, n, replace = T)
+    # Y[i, ] <- rnorm(n, 0, alpha[i])
+    if (sparsity > 0) {
+      zero_indices <- sort(sample(n, floor(sparsity * n)))
+
+      Y[i, zero_indices] <- 0
+    }
+  }
+  LFt = Y
+  Y = Y + matrix(rnorm(n*d, 0, sigma_e), nrow=d, ncol=n)
+  library(Matrix)
+  Y <- Matrix(Y, sparse = TRUE)
+  return(list(Y=Y, LFt=LFt))
+}
+```
+
+```{r}
+document()
+load_all()
+library(vpca)
+sigma_e <- 1.
+flash_pe_sigma2 <- c()
+flash_pn_sigma2 <- c()
+flash_pl_sigma2 <- c()
+flash_n_sigma2 <- c()
+flash_gb_sigma2 <- c()
+vpca_sigma2 <- c()
+
+flash_pe_rrmse <- c()
+flash_pn_rrmse <- c()
+flash_pl_rrmse <- c()
+flash_n_rrmse <- c()
+flash_gb_rrmse <- c()
+vpca_rrmse <- c()
+
+for (i in 1:20) {
+  print(i)
+  q = 49
+  k = 49
+  sim_count <- generate_Y_count(sigma_e = sigma_e, seed = 300+i)
+  # print(sum(Y))
+  # flash_obj_pn <- flash(Y,
+  #                    ebnm_fn = ebnm_point_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_count, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal)
+  flash_pn_sigma2 = res[[1]]
+  flash_pn_rrmse = res[[2]]
+  # flash_obj_pl <- flash(Y,
+  #                    ebnm_fn = ebnm_point_laplace,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_count, flash_pl_sigma2, flash_pl_rrmse, ebnm_point_laplace)
+  flash_pl_sigma2 = res[[1]]
+  flash_pl_rrmse = res[[2]]
+  # flash_obj_pe <- flash(Y,
+  #                    ebnm_fn = ebnm_point_exponential,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_count, flash_pe_sigma2, flash_pe_rrmse, ebnm_point_exponential)
+  flash_pe_sigma2 = res[[1]]
+  flash_pe_rrmse = res[[2]]
+  # flash_obj_n <- flash(Y,
+  #                    ebnm_fn = ebnm_normal,
+  #                    greedy_Kmax = 10, var_type = 0, verbose = 0, backfit = T)
+  res <- update_flash_res(sim_count, flash_n_sigma2, flash_n_rrmse, ebnm_normal)
+  flash_n_sigma2 = res[[1]]
+  flash_n_rrmse = res[[2]]
+  
+  res <- update_flash_res(sim_count, flash_pn_sigma2, flash_pn_rrmse, ebnm_point_normal)
+  flash_gb_sigma2 = res[[1]]
+  flash_gb_rrmse = res[[2]]
+  
+  res_vpca <- init_svd(sim_count$Y, q = q, include_mu = F, alpha_for_X = F, alpha_MLE = F)
+  res_vpca <- vpcar(res_vpca, max.iter = 2000, min.iter = 1, epsilon=0.0001)
+  vpca_sigma2 = c(vpca_sigma2, 1/res_vpca$E_tau)
+  vpca_rrmse = c(vpca_rrmse, rrmse(res_vpca$E_W %*% res_vpca$E_X, sim_count$LFt))
+}
+```
+
+```{r}
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pl_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_laplace', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2, flash_pn_sigma2, flash_pe_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal', 'flash_pt_exp'), myColors = fill_color)
+plot_res(cbind(vpca_sigma2, flash_n_sigma2), title='sigma^2', x_label=c('VPCA', 'flash_normal'), myColors = fill_color)
+plot_res(cbind(flash_pl_sigma2), title='sigma^2', x_label=c('flash_pt_laplace'), myColors = fill_color)
+```
+
+```{r}
+plot_res(cbind(vpca_rrmse, flash_n_rrmse, flash_pn_rrmse, flash_gb_rrmse, flash_pl_rrmse, flash_pe_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal', 'flash_pt_normal','flash_gb', 'flash_pt_laplace', 'flash_pt_exp'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(vpca_rrmse, flash_n_rrmse), title='rrmse', x_label=c('VPCA', 'flash_normal'), myColors = fill_color, plot_true_noise = F)
+plot_res(cbind(flash_pl_rrmse), title='rrmse', x_label=c('flash_pt_laplace'), myColors = fill_color, plot_true_noise = F)
+```
+
+```{r}
+d = 100
+n = 100
+Y <- matrix(rnorm(d * n, 0, 4), nrow = d, ncol = n)
+res = flash(Y, ebnm_fn = flash_ebnm('normal', mode = 0, scale = 1), greedy_Kmax = 1)
+```
