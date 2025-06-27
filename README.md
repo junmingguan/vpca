@@ -21,7 +21,9 @@ library(vpca)
 
 A simple example:
 ```r
-Y <- matrix(data = 0, nrow = 10, ncol = 100)
+d <- 10
+n <- 100
+Y <- matrix(data = 0, nrow = d, ncol = n)
 alpha <- rep(1, d)
 alpha[1:5] <- q:5
 for (i in 1:d) {
