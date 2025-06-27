@@ -7,7 +7,7 @@ To use the package, do the following steps:
 -   `> cd PATH/TO/vpca`;
 -   In R, install the load the package:
 ```r
-    install.packages("PHT/TO/vpca", repos = NULL, type = "source")
+    install.packages("PATH/TO/vpca", repos = NULL, type = "source")
     library(vpca)
 ```
 
